@@ -38,6 +38,15 @@ This touches only the firstmate repo and its own worktrees, never anything under
 
 ## What it does
 
+0. **Home-local pre-steps (only when these private scripts exist in this home):**
+   ```sh
+   [ -x data/fork-sync/fm-fork-sync.sh ] && data/fork-sync/fm-fork-sync.sh
+   [ -x data/fork-sync/fm-tools-upgrade.sh ] && data/fork-sync/fm-tools-upgrade.sh
+   ```
+   The first rebases a home that carries its own commits onto the latest upstream and pushes them to its fork; on a conflict (exit 2) it changes nothing, so stop and report the conflicting commit.
+   The second upgrades the tools firstmate needs (the `-axi` CLIs, no-mistakes, omp) to their latest releases and prints one line per tool; report every upgraded or failed tool.
+   A home without these scripts skips this step.
+
 1. **Run the updater:**
    ```sh
    bin/fm-update.sh
