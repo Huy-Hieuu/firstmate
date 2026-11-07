@@ -1,0 +1,47 @@
+{
+  "rules": [
+    {
+      "when": "Any UI build or visible UI change (layout, styling, wording on a page).",
+      "use": {
+        "harness": "omp",
+        "model": "claude-opus-5-5",
+        "effort": "high"
+      },
+      "why": "Captain 2026-11-03: every UI build runs on Opus 5.5 high and loads premium-ui-polish, never Sonnet."
+    },
+    {
+      "when": "The hardest work: open-ended architecture or design spanning several repos or subsystems, a security audit of a trust boundary or secrets path, a root-cause hunt with no reliable repro, a protocol, wire-contract, transport, or data-migration change whose mistakes are costly to undo, or any task where many interacting parts must be held in mind at once and a wrong call is expensive.",
+      "use": {
+        "harness": "omp",
+        "model": "claude-opus-5-5",
+        "effort": "xhigh"
+      },
+      "why": "Captain 2026-10-02: effort scales with task difficulty, from medium up to xhigh; xhigh is the top of the range for the hardest, highest-blast-radius work."
+    },
+    {
+      "when": "Work that needs real reasoning but is bounded: an investigation with a partial lead, a design choice inside one subsystem, a non-trivial feature or bug fix touching several modules, a risky refactor, debugging with a repro, or a review whose findings need judgment.",
+      "use": {
+        "harness": "omp",
+        "model": "claude-opus-5-5",
+        "effort": "high"
+      },
+      "why": "Captain 2026-10-02: effort scales with task difficulty; high is the middle band."
+    },
+    {
+      "when": "Easy, well-understood implementation with a clear spec: a small bug fix or feature in one module, a version bump or release, a mechanical edit, a docs or board text change, a node install or hardware window that follows a known runbook, or collecting data with a given method.",
+      "use": {
+        "harness": "omp",
+        "model": "claude-sonnet-5-5",
+        "effort": "medium"
+      },
+      "why": "Captain 2026-10-25: use Sonnet 5.5 for easy implementation tasks to save tokens; Opus 5.5 stays for work that needs real reasoning (high) and the hardest work (xhigh)."
+    }
+  ],
+  "default": [
+    {
+      "harness": "omp",
+      "model": "claude-sonnet-5-5",
+      "effort": "medium"
+    }
+  ]
+}
