@@ -9,7 +9,8 @@ This repository is public, so nothing here holds secrets, hostnames, addresses, 
 - `captain-shared.md` seeds `data/captain-shared.md`: preferences that apply in every home and every project.
 - `captain.md` seeds `data/captain.md`: home-local defaults (worker runtime, delivery, backpass, agents).
 - `learnings.md` seeds `data/learnings.md`: operating lessons for firstmate on the captain's MacBook.
-- `config/` seeds `config/`: worker runtime pins, runtime backend, dispatch model bands and the startup memory budget.
+- `config-seed/` seeds `config/`: worker runtime pins, runtime backend, dispatch model bands and the startup memory budget.
+  It is not named `config/` because the repository ignores every `config/` directory.
 
 ## Seeding a new home
 
@@ -20,7 +21,7 @@ mkdir -p data config
 for f in captain.md captain-shared.md learnings.md; do
   [ -e "data/$f" ] || cp "captain-profile/$f" "data/$f"
 done
-for f in captain-profile/config/*; do
+for f in captain-profile/config-seed/*; do
   [ -e "config/$(basename "$f")" ] || cp "$f" "config/"
 done
 ```
