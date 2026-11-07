@@ -351,6 +351,12 @@ WATCHER_STALE_GRACE=${FM_WATCHER_STALE_GRACE:-${FM_GUARD_GRACE:-$(fm_poll_derive
 WATCHER_STALL_BOUND=$(fm_watcher_stall_bound "$POLL")
 HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
+# Longest wait before absorbed informational status lines wake firstmate once as
+# a batch (bin/fm-classify-lib.sh "Informational status batching"). The marker's
+# mtime is the oldest absorbed line still waiting for that flush.
+INFO_BATCH_SECS=${FM_INFO_BATCH_SECS:-1800}
+case "$INFO_BATCH_SECS" in ''|*[!0-9]*|0) INFO_BATCH_SECS=1800 ;; esac
+INFO_BATCH_MARKER="$STATE/.info-batch-pending"
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
 CHECK_TIMEOUT=${FM_CHECK_TIMEOUT:-30}     # seconds allowed per *.check.sh
 HOME_SUMMARY_INTERVAL=${FM_HOME_SUMMARY_INTERVAL:-300}
@@ -3327,6 +3333,55 @@ signal_files_actionable() {  # <status-file> ...
   return "$found"
 }
 
+# 0 when every file in a signal batch is a status log whose newly classified span
+# holds only informational lines (bin/fm-classify-lib.sh "Informational status
+# batching"), so the batch can wait for the informational flush below instead of
+# waking firstmate now. Reads the endpoints signal_files_actionable just
+# captured. Any other file kind (a bare turn-end keeps its own triage), a file
+# without a captured endpoint, an empty span, or a read failure returns 1.
+signal_files_batched_info() {  # <file> ...
+  local f ef endpoint ident captured
+  [ "$#" -gt 0 ] || return 1
+  for f in "$@"; do
+    case "$f" in *.status) ;; *) return 1 ;; esac
+    captured=''
+    while IFS=$(printf '\t') read -r ef endpoint ident; do
+      if [ "$ef" = "$f" ]; then captured=$endpoint; break; fi
+    done <<EOF
+$FM_SIGNAL_SURFACE_ENDPOINTS
+EOF
+    [ -n "$captured" ] || return 1
+    status_span_batched_info_only "$f" "$(fm_wake_signal_seen_size "$STATE" "$f")" "$captured" || return 1
+  done
+}
+
+# Record that an absorbed informational line is waiting for the batch flush. The
+# marker is created once, so its mtime stays the oldest waiting line's age.
+info_batch_mark_pending() {
+  [ -e "$INFO_BATCH_MARKER" ] || : > "$INFO_BATCH_MARKER"
+}
+
+# Wake firstmate once for the absorbed informational batch after INFO_BATCH_SECS.
+# The drain's UNREAD STATUS section presents the lines; a batch an earlier drain
+# already presented retires its marker without a wake. Enqueue precedes the
+# marker removal, so a crash in between can only cost a later empty-batch check.
+info_batch_flush_due() {
+  local reason="check: informational status batch ready (UNREAD STATUS)" unread
+  [ -e "$INFO_BATCH_MARKER" ] || return 0
+  [ "$(age_of "$INFO_BATCH_MARKER")" -ge "$INFO_BATCH_SECS" ] || return 0
+  if ! unread=$(scan_unread_surface_lines "$STATE"); then
+    unread=unknown
+  fi
+  if [ -z "$unread" ]; then
+    rm -f "$INFO_BATCH_MARKER"
+    triage_log "informational batch already presented; no flush wake"
+    return 0
+  fi
+  fm_wake_append check info-batch "$reason" || exit 1
+  rm -f "$INFO_BATCH_MARKER"
+  wake "$reason"
+}
+
 # Surfaced-marker bookkeeping for the heartbeat backstop is owned by
 # fm-push-transition-lib.sh because push and poll paths must write one format.
 # Mark each actionable status log through the endpoint captured by the heartbeat
@@ -4187,9 +4242,22 @@ EOF
     # fm-primary-pi-watch.ts), and the away daemon, whose handle_durable_wakes
     # passes it to handle_wake (see the comment above handle_wake in
     # bin/fm-supervise-daemon.sh).
+    # A signal with no evidence of work in progress is still absorbed when every
+    # new line in its status logs is informational (signal_files_batched_info);
+    # info_batch_flush_due then wakes firstmate once for the batch.
+    signal_surface=1
+    signal_batched=1
     # shellcheck disable=SC2086  # same space-separated status-path list
-    if afk_present || [ "$signal_actionable" -eq 0 ] \
-      || { ! signal_crew_provably_working $files && ! signal_turnend_panes_churned $files; }; then
+    if afk_present || [ "$signal_actionable" -eq 0 ]; then
+      signal_surface=0
+    elif signal_crew_provably_working $files || signal_turnend_panes_churned $files; then
+      :
+    elif signal_files_batched_info $files; then
+      signal_batched=0
+    else
+      signal_surface=0
+    fi
+    if [ "$signal_surface" -eq 0 ]; then
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
         file_reason="$reason"
@@ -4247,7 +4315,12 @@ $pending
 EOF
         wake "$reason"
       fi
-      triage_log "absorbed benign $reason"
+      if [ "$signal_batched" -eq 0 ]; then
+        info_batch_mark_pending
+        triage_log "absorbed informational $reason (batched for the next flush)"
+      else
+        triage_log "absorbed benign $reason"
+      fi
     fi
   fi
 
@@ -4503,6 +4576,10 @@ EOF
       fi
     fi
   done < <(recorded_windows)
+
+  # Informational batch flush: absorbed working/paused/acknowledgement lines reach
+  # firstmate once per INFO_BATCH_SECS instead of once per append.
+  info_batch_flush_due
 
   # Heartbeat: the watcher runs a cheap fleet-scan at a regular cadence no matter
   # what. Time-based via .last-heartbeat mtime; interval doubles per consecutive

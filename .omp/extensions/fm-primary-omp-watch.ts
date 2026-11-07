@@ -57,9 +57,21 @@
 // consumes at the user message_start carrying the exact wake text; either
 // event finishes the pending record, and a still-unconsumed record rides the
 // replacement handoff.
+//
+// Held wakes (stated once here):
+// A follow-up omp queues while main is streaming opens its own turn only after
+// that run ends, and by then main has often drained and acknowledged the very
+// rows it named, so the turn finds nothing. While main is streaming
+// (ctx.isIdle() === false) a plain watcher wake is therefore held instead of
+// queued, still counted as delivered to the successor pipeline and still
+// pending for the replacement handoff. Once main is idle, held wakes coalesce
+// into one follow-up, or are finished without a turn when
+// bin/fm-wake-drain.sh --has-work reports that a drain would present nothing.
+// A failure message, a host-mode message, or a context without isIdle is sent
+// at once exactly as before.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // typebox resolves inside omp's extension loader (verified, omp 18.1.11); the
@@ -108,6 +120,8 @@ type ReplacementActionableHandoff = {
 type UnconsumedWake = {
   content: string;
   pending: PendingActionableClose;
+  // The wake reason while held for a streaming main; unset once sent.
+  held?: string;
 };
 
 type SessionGeneration = {
@@ -131,6 +145,7 @@ type SessionGeneration = {
   // still delivering the wake it was started for; its bounded retry runs once
   // that delivery settles instead of being skipped by the single-flight guard.
   deferredClose: { message: string; predecessorArmPid: string } | null;
+  heldTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const extensionFile = fileURLToPath(import.meta.url);
@@ -486,6 +501,7 @@ function createGeneration(): SessionGeneration {
     pendingActionables: [],
     cleanupFailure: "",
     unconsumedWakes: new Map(),
+    heldTimer: null,
     deferredClose: null,
   };
 }
@@ -504,6 +520,8 @@ function stopGeneration(generation: SessionGeneration): ChildProcess | null {
   if (generation.cleanupTimer) clearTimeout(generation.cleanupTimer);
   generation.retryTimer = null;
   generation.cleanupTimer = null;
+  if (generation.heldTimer) clearTimeout(generation.heldTimer);
+  generation.heldTimer = null;
   const child = generation.child;
   if (child) child.kill("SIGTERM");
   generation.child = null;
@@ -560,16 +578,44 @@ export default function (pi: ExtensionAPI) {
   let generation = createGeneration();
   activateGeneration(generation);
 
+  // The latest omp context's idle probe; see "Held wakes" above.
+  let mainIdle: (() => unknown) | null = null;
+  const heldWakePollMs = 1000;
+
+  function rememberContext(ctx: unknown): void {
+    if (!ctx || typeof ctx !== "object" || !("isIdle" in ctx)) return;
+    const probe = ctx.isIdle;
+    if (typeof probe === "function") mainIdle = () => probe.call(ctx);
+  }
+
+  function mainStreaming(): boolean {
+    try {
+      return mainIdle?.() === false;
+    } catch {
+      return false;
+    }
+  }
+
+  function wakeContent(message: string): string {
+    return encodeFirstmateOperationalInput(
+      "watcher",
+      `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
+    );
+  }
+
   async function sendWake(
     owner: SessionGeneration,
     message: string,
     pending?: PendingActionableClose,
   ): Promise<boolean> {
     if (!generationIsLive(owner)) return false;
-    const content = encodeFirstmateOperationalInput(
-      "watcher",
-      `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
-    );
+    const plainWake = message.split("\n").every((line) => /^(signal:|stale:|check:|heartbeat($|:))/.test(line));
+    if (pending && plainWake && mainStreaming()) {
+      owner.unconsumedWakes.set(pending.token, { content: "", pending, held: message });
+      scheduleHeldWakes(owner, heldWakePollMs);
+      return generationIsLive(owner);
+    }
+    const content = wakeContent(message);
     if (pending) owner.unconsumedWakes.set(pending.token, { content, pending });
     try {
       await pi.sendUserMessage(content, { deliverAs: "followUp" });
@@ -584,19 +630,85 @@ export default function (pi: ExtensionAPI) {
     return generationIsLive(owner);
   }
 
+  function scheduleHeldWakes(owner: SessionGeneration, delayMs: number): void {
+    if (!generationIsLive(owner) || owner.heldTimer) return;
+    const timer = setTimeout(() => {
+      if (owner.heldTimer === timer) owner.heldTimer = null;
+      flushHeldWakes(owner);
+    }, delayMs);
+    timer.unref();
+    owner.heldTimer = timer;
+  }
+
+  // 0 from the drain's read-only probe is work and 1 is none; anything else,
+  // including a probe that cannot run, counts as work so the wake is sent.
+  function queueHasWork(): boolean {
+    try {
+      const result = spawnSync("bash", [`${fmRoot}/bin/fm-wake-drain.sh`, "--has-work"], {
+        cwd: fmRoot,
+        stdio: "ignore",
+        env: { ...process.env, FM_HOME: fmHome, FM_STATE_OVERRIDE: state, FM_ROOT_OVERRIDE: fmRoot },
+      });
+      return result.status !== 1;
+    } catch {
+      return true;
+    }
+  }
+
+  function flushHeldWakes(owner: SessionGeneration): void {
+    if (!generationIsLive(owner)) return;
+    const held = [...owner.unconsumedWakes].filter(([, wake]) => wake.held !== undefined);
+    if (held.length === 0) return;
+    if (mainStreaming()) {
+      scheduleHeldWakes(owner, heldWakePollMs);
+      return;
+    }
+    const reasons = [...new Set(held.map(([, wake]) => wake.held as string))].join("\n");
+    if (!queueHasWork()) {
+      for (const [token, wake] of held) settleWake(owner, token, wake);
+      try {
+        appendFileSync(
+          `${state}/.watch-triage.log`,
+          `[${new Date().toISOString()}] omp: no wake turn; main's busy turn already handled: ${reasons.replace(/\n/g, " | ")}\n`,
+        );
+      } catch {
+        // Best-effort record, as the watcher's own triage log is.
+      }
+      return;
+    }
+    // One follow-up carries every held reason; its drain presents every row,
+    // so the others are finished as coalesced into it.
+    const [[, first], ...rest] = held;
+    for (const [token, wake] of rest) settleWake(owner, token, wake);
+    const content = wakeContent(reasons);
+    first.content = content;
+    first.held = undefined;
+    try {
+      pi.sendUserMessage(content, { deliverAs: "followUp" });
+    } catch {
+      first.content = "";
+      first.held = reasons;
+      scheduleHeldWakes(owner, retryDelay(1));
+    }
+  }
+
+  function settleWake(owner: SessionGeneration, token: string, wake: UnconsumedWake): void {
+    owner.unconsumedWakes.delete(token);
+    wake.pending.delivered = true;
+    try {
+      finishPendingActionable(owner, wake.pending);
+    } catch (error) {
+      surfaceCleanupFailure(owner, error);
+      schedulePendingCleanup(owner);
+    }
+  }
+
   // omp consumed a main follow-up: an idle main at before_agent_start, a
   // streaming main at the user message_start that joins the running run.
   function consumeWake(owner: SessionGeneration, text: string): void {
     for (const [token, wake] of owner.unconsumedWakes) {
-      if (wake.content !== text) continue;
-      owner.unconsumedWakes.delete(token);
-      wake.pending.delivered = true;
-      try {
-        finishPendingActionable(owner, wake.pending);
-      } catch (error) {
-        surfaceCleanupFailure(owner, error);
-        schedulePendingCleanup(owner);
-      }
+      if (wake.held !== undefined || wake.content !== text) continue;
+      settleWake(owner, token, wake);
       return;
     }
   }
@@ -1098,16 +1210,19 @@ export default function (pi: ExtensionAPI) {
     return result;
   }
 
-  pi.on?.("before_agent_start", (event) => {
+  pi.on?.("before_agent_start", (event, ctx) => {
+    rememberContext(ctx);
     consumeWake(generation, String((event as { prompt?: unknown })?.prompt ?? ""));
   });
-  pi.on?.("message_start", (event) => {
+  pi.on?.("message_start", (event, ctx) => {
+    rememberContext(ctx);
     const message = (event as { message?: { role?: unknown; content?: unknown } })?.message;
     if (!message || message.role !== "user") return;
     consumeWake(generation, userMessageText(message.content));
   });
 
-  pi.on?.("session_start", async () => {
+  pi.on?.("session_start", async (_event, ctx) => {
+    rememberContext(ctx);
     if (generation.stopping) generation = createGeneration();
     activateGeneration(generation);
     markLoaded();

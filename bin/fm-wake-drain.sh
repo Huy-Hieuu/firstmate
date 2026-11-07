@@ -222,8 +222,51 @@ presented_max_row() { # <rows-file>
   fi
 }
 
+# --has-work: the read-only probe a watcher bridge runs before delivering a wake
+# that waited while main was busy (.omp/extensions/fm-primary-omp-watch.ts).
+# Exit 0 when a main drain would present a wake row or require a recovery
+# acknowledgement, 1 when it would present nothing to act on, 2 when that cannot
+# be decided. A row for a process-event result already recorded as handled
+# (bin/fm-procevent.sh handled) is not work; a live branch grant always is. It
+# takes no queue lock: a row appended after this read brings its own wake.
+drain_has_work() {
+  local epoch seq kind key payload rest
+  if [ -e "$ELIGIBLE_ROWS_FILE" ] || [ -L "$ELIGIBLE_ROWS_FILE" ]; then return 0; fi
+  if [ -s "$FM_WAKE_QUEUE" ]; then
+    [ -f "$FM_WAKE_QUEUE" ] && [ -r "$FM_WAKE_QUEUE" ] || return 2
+    # shellcheck source=bin/fm-pr-lib.sh
+    . "$SCRIPT_DIR/fm-pr-lib.sh" || return 2
+    # shellcheck source=bin/fm-procevent-lib.sh
+    . "$SCRIPT_DIR/fm-procevent-lib.sh" || return 2
+    while IFS=$(printf '\t') read -r epoch seq kind key payload || [ -n "$epoch" ]; do
+      [ -n "$epoch$seq$kind$key$payload" ] || continue
+      if [ "$kind" = check ]; then
+        case "$key" in
+          procevent:*:*)
+            rest=${key#procevent:}
+            fm_procevent_is_handled "$STATE" "${rest%:*}" "${rest##*:}" && continue
+            ;;
+        esac
+      fi
+      return 0
+    done < "$FM_WAKE_QUEUE"
+    return 1
+  fi
+  fm_recovery_marker_snapshot "$RECOVERY_MARKER" || return 2
+  case "$FM_RECOVERY_MARKER_TOKEN" in
+    pending:*|announced:*) return 0 ;;
+  esac
+  return 1
+}
+
 case "${1:-}" in
   '') ;;
+  --has-work)
+    [ "$#" -eq 1 ] || { echo "wake drain: unexpected --has-work arguments" >&2; exit 2; }
+    [ "$ACTOR" = main ] || { echo "wake drain: --has-work answers for main only" >&2; exit 2; }
+    drain_has_work
+    exit $?
+    ;;
   --ack-through)
     ACK_THROUGH=${2:-}
     case "$ACK_THROUGH" in ''|*[!0-9]*) echo "wake drain: invalid acknowledgement sequence" >&2; exit 2 ;; esac
@@ -233,7 +276,7 @@ case "${1:-}" in
     case "$ACK_GENERATION" in ''|*[!A-Za-z0-9._-]*) echo "wake drain: invalid recovery generation" >&2; exit 2 ;; esac
     [ "$#" -eq 4 ] || { echo "wake drain: unexpected acknowledgement arguments" >&2; exit 2; }
     ;;
-  *) echo "usage: fm-wake-drain.sh [--ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
+  *) echo "usage: fm-wake-drain.sh [--has-work | --ack-through SEQUENCE --recovery-generation GENERATION]" >&2; exit 2 ;;
 esac
 
 [ "$ACTOR" != branch ] || require_branch_eligible_rows || exit 1
@@ -423,14 +466,16 @@ EOF
   fi
 }
 
-# Print still-unread informational status lines (note: answers and pending-reply
-# resolutions) that the OPEN DECISIONS fold never carries. Uses the same
-# cursor-backed unread span as the annotation path, and runs on every drain -
-# including the empty-queue fast path - so a buried answer cannot be swallowed
-# when the fold later advances the cursor. Prints nothing when nothing is
-# unread, which is the common case.
-print_unread_status_section() {
-  local snapshot=${1:-} unread task line shown=0
+# Print still-unread informational status lines (note: answers, pending-reply
+# resolutions, and batched info - bin/fm-classify-lib.sh
+# status_line_is_unread_surface) that the OPEN DECISIONS fold never carries. Uses
+# the same cursor-backed unread span as the annotation path, and runs on every
+# drain - including the empty-queue fast path - so a buried answer cannot be
+# swallowed when the fold later advances the cursor. A task whose wake row this
+# drain annotated directly already showed every unread line, so it is skipped.
+# Prints nothing when nothing is unread, which is the common case.
+print_unread_status_section() {  # [<snapshot>] [<fully-presented-task-ids>]
+  local snapshot=${1:-} fully_presented=${2:-} unread task line shown=0
 
   if [ -n "$snapshot" ]; then
     unread=$(scan_unread_surface_snapshot "$STATE" "$snapshot") || return 1
@@ -442,6 +487,9 @@ print_unread_status_section() {
   while IFS=$(printf '\t') read -r task line; do
     [ -n "$task" ] || continue
     [ -n "$line" ] || continue
+    case "
+$fully_presented
+" in *$'\n'"$task"$'\n'*) continue ;; esac
     line="$task $line"
     if [ "$shown" -eq 0 ]; then
       printf 'UNREAD STATUS (new since last drain, not re-printed after this presentation):\n' || return 1
@@ -766,7 +814,7 @@ print_status_sections() {
   acknowledged=$(status_acknowledge_presented_snapshot "$STATE" "$snapshot" "$fully_presented") || return 1
   prepared=$(mktemp "$STATE/.status-presentation.prepared.XXXXXX") || return 1
   if ! {
-    print_unread_status_section "$snapshot" \
+    print_unread_status_section "$snapshot" "$fully_presented" \
       && print_status_outcome_backstop_section "$snapshot" \
       && print_open_decisions_section "$snapshot" \
       && print_record_divergence_section

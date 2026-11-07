@@ -123,6 +123,36 @@ FM_CLASSIFY_PAUSED_VERB_DEFAULT='paused'
 # shellcheck disable=SC2034 # Read by the watcher and daemon (fm-watch.sh, fm-supervise-daemon.sh), not this lib.
 FM_PAUSE_RESURFACE_SECS_DEFAULT=14400
 
+# Informational status batching - the one owner of which status lines may wait.
+# A line that only reports progress or acknowledges a routed request does not
+# need a model turn of its own, so status_line_is_batched_info names exactly
+# these lines:
+#   - a `working:` or declared-wait `paused:` line;
+#   - a `done:` line that carries a key or a correlation token and whose note,
+#     after any leading correlation token, opens with an acknowledgement word
+#     (FM_CLASSIFY_ACK_WORDS_DEFAULT: applied, forwarded, noted, ...).
+# Each of those still stays immediate when it carries a key with an immediate
+# prefix (FM_CLASSIFY_IMMEDIATE_KEY_PREFIXES_DEFAULT: hardware windows, decisions,
+# blockers, merges, child PRs, child outcomes, pending-reply escalations), a
+# pull-request or merge-request URL, a relay request ("please"), or a terminal
+# token (PR ready, checks green, ready in branch). Every other line - an unknown
+# or malformed prefix, note:, resolved, captain-held, needs-decision, blocked,
+# failed, and any outcome-bearing done - stays immediate, so doubt never delays.
+# Three consumers apply it:
+#   - status_span_first_actionable_record never counts an acknowledgement-only
+#     done as an actionable event, so neither a signal nor the heartbeat
+#     backstop wakes on one;
+#   - bin/fm-watch.sh absorbs a signal whose every new status line is batched
+#     info and owns the flush that wakes firstmate once for the whole batch
+#     (FM_INFO_BATCH_SECS, docs/configuration.md);
+#   - status_line_is_unread_surface makes every unread batched line part of the
+#     drain's one-shot UNREAD STATUS presentation, at the flush or any earlier
+#     drain.
+# Pending-reply correlation needs no model turn: bin/fm-pending-reply-lib.sh
+# resolves a correlated line from the status log on the watcher's own cycle.
+FM_CLASSIFY_ACK_WORDS_DEFAULT='applied acknowledged accepted forwarded noted queued recorded relayed sent'
+FM_CLASSIFY_IMMEDIATE_KEY_PREFIXES_DEFAULT='hw-window needs-decision blocked merged- child-pr- child-outcome- pending-reply-'
+
 # fm_utc_iso_to_epoch <YYYY-MM-DDTHH:MM[:SS]Z>: the one portable UTC ISO 8601
 # reader shared by the declared-wait vocabulary and the away-posture record
 # (bin/fm-afk-contract.sh). Prints epoch seconds; returns 1 on any other shape
@@ -328,6 +358,71 @@ status_is_paused() {  # <status-line>
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   [ "$verb" = "${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}" ]
+}
+
+# 0 when a status line may wait for the informational batch (see "Informational
+# status batching" above); 1 when it must stay immediate.
+status_line_is_batched_info() {  # <status-line>
+  local line=$1 verb key prefix note word ack
+  [ -n "$line" ] || return 1
+  status_line_verb "$line" verb
+  case "$verb" in
+    working|done|"${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}") ;;
+    *) return 1 ;;
+  esac
+  status_prefix_unrecognized "$line" && return 1
+  key=$(_fm_decision_key "$line" '') || return 1
+  for prefix in $FM_CLASSIFY_IMMEDIATE_KEY_PREFIXES_DEFAULT; do
+    case "$key" in "$prefix"*) return 1 ;; esac
+  done
+  case "$line" in
+    *://*/pull/*|*://*/merge_requests/*|*[Pp][Ll][Ee][Aa][Ss][Ee]*) return 1 ;;
+    *'PR ready'*|*'checks green'*|*'ready in branch'*) return 1 ;;
+  esac
+  [ "$verb" = "done" ] || return 0
+  if [ -z "$key" ]; then
+    case "$line" in *corr=*) ;; *) return 1 ;; esac
+  fi
+  note=$(status_line_note "$line")
+  while :; do
+    word=${note%%[[:space:]]*}
+    word=${word#\[}
+    word=${word%\]}
+    _fm_classify_is_corr_token "$word" || break
+    note=${note#*"$word"}
+    note=${note#\]}
+    note=${note#"${note%%[![:space:]]*}"}
+  done
+  case "$note" in [A-Z]*) note="$(printf '%s' "${note%"${note#?}"}" | tr '[:upper:]' '[:lower:]')${note#?}" ;; esac
+  for ack in $FM_CLASSIFY_ACK_WORDS_DEFAULT; do
+    case "$note" in "$ack"|"$ack"[!A-Za-z0-9_-]*) return 0 ;; esac
+  done
+  return 1
+}
+
+# 0 when the status-log bytes from <start> to <end> (default: current size) hold
+# at least one line and every non-blank line is batched info. An empty span, a
+# start past the end, or an unreadable log returns 1, so the caller keeps its
+# ordinary triage.
+status_span_batched_info_only() {  # <status-file> <start-offset> [<end-offset>]
+  local f=$1 start=${2:-0} end=${3:-} chunk line seen=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
+  if [ -z "$end" ]; then
+    end=$(_fm_status_file_size "$f") || return 1
+    end=${end//[[:space:]]/}
+  fi
+  case "$end" in ''|*[!0-9]*) return 1 ;; esac
+  case "$start" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$start" -lt "$end" ] || return 1
+  chunk=$(_fm_status_read_span "$f" "$start" "$((end - start))") || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    status_line_is_batched_info "$line" || return 1
+    seen=1
+  done <<EOF
+$chunk
+EOF
+  [ "$seen" -eq 1 ]
 }
 
 # 0 if a status line's leading verb is the verified captain-held transfer verb.
@@ -2082,9 +2177,10 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   return "$rc"
 }
 
-# 0 when a status line is an informational `note:` or a reserved-key
-# pending-reply resolution. Those lines never fold into OPEN DECISIONS, so the
-# drain's unread-status surface is their only guaranteed presentation.
+# 0 when a status line is an informational `note:`, a reserved-key pending-reply
+# resolution, or batched info (status_line_is_batched_info). Those lines never
+# fold into OPEN DECISIONS, so the drain's unread-status surface is their only
+# guaranteed presentation.
 status_line_is_unread_surface() {  # <status-line>
   local line=$1 verb key note resolve held prefix
   [ -n "$line" ] || return 1
@@ -2094,7 +2190,7 @@ status_line_is_unread_surface() {  # <status-line>
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   case "$verb" in
     "$resolve"|"$held") ;;
-    *) return 1 ;;
+    *) status_line_is_batched_info "$line"; return ;;
   esac
   key=$(_fm_decision_key "$line") || return 1
   note=$(status_line_note "$line")
@@ -2408,7 +2504,8 @@ EOF
 # reconciliation signal and never treated here as an open decision.
 # status_open_decisions remains the single owner of open/closed semantics,
 # including same-key reopening and reserved-key handling.
-# Every other captain-relevant event is terminal and always actionable.
+# Every other captain-relevant event is terminal and always actionable, except an
+# acknowledgement-only done, which waits for the informational batch.
 _fm_decision_origin_drop() {  # <origins> <key>
   local origin
   while IFS= read -r origin; do
@@ -2531,6 +2628,8 @@ EOF
         rc=0
         ;;
       *)
+        # An acknowledgement-only done waits for the informational batch.
+        status_line_is_batched_info "$line" && continue
         [ -n "$events" ] && events="${events} ; "
         events="${events}${line}"
         rc=0
@@ -2800,7 +2899,9 @@ crew_worktree_written_since() {  # <id> <state> <anchor-file>
 # unmarked routine `working:` and `paused:` progress falls through
 # to the same provably-working absorb an ordinary crewmate gets, so a healthy
 # mate's progress no longer wakes the primary on every append while an unproven
-# mate still surfaces. The span starts at the classified position its owner
+# mate still surfaces. A line this function surfaces may still wait for the
+# watcher's informational batch when status_line_is_batched_info says so (see
+# "Informational status batching" above). The span starts at the classified position its owner
 # reports (fm_wake_signal_seen_size, bin/fm-wake-lib.sh, loaded by every watcher
 # caller); a caller without that library reads the whole log, which can only
 # surface more. An unreadable span surfaces. Scoped to .status files - a mate's
