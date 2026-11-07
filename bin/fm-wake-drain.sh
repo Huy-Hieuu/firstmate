@@ -473,6 +473,9 @@ EOF
 # drain - including the empty-queue fast path - so a buried answer cannot be
 # swallowed when the fold later advances the cursor. A task whose wake row this
 # drain annotated directly already showed every unread line, so it is skipped.
+# Every row carries the `UNREAD STATUS: ` label, like the header, so a reader
+# that filters drain output down to its labelled lines keeps every row and a
+# non-empty section never reads as empty.
 # Prints nothing when nothing is unread, which is the common case.
 print_unread_status_section() {  # [<snapshot>] [<fully-presented-task-ids>]
   local snapshot=${1:-} fully_presented=${2:-} unread task line shown=0
@@ -490,7 +493,7 @@ print_unread_status_section() {  # [<snapshot>] [<fully-presented-task-ids>]
     case "
 $fully_presented
 " in *$'\n'"$task"$'\n'*) continue ;; esac
-    line="$task $line"
+    line="UNREAD STATUS: $task $line"
     if [ "$shown" -eq 0 ]; then
       printf 'UNREAD STATUS (new since last drain, not re-printed after this presentation):\n' || return 1
     fi

@@ -3362,15 +3362,25 @@ info_batch_mark_pending() {
 }
 
 # Wake firstmate once for the absorbed informational batch after INFO_BATCH_SECS.
-# The drain's UNREAD STATUS section presents the lines; a batch an earlier drain
-# already presented retires its marker without a wake. Enqueue precedes the
+# The drain's UNREAD STATUS section presents the lines, and this flush reads them
+# through the same predicate (scan_unread_surface_lines), so it wakes only when
+# that section will print at least one row; a batch an earlier drain already
+# presented retires its marker without a wake. A failed scan logs once per
+# watcher process and keeps the marker for the next cycle rather than waking on
+# a guess: batched lines are informational by definition, stay unread in their
+# status logs, and any other drain still presents them. Enqueue precedes the
 # marker removal, so a crash in between can only cost a later empty-batch check.
+INFO_BATCH_SCAN_FAILURE_LOGGED=0
 info_batch_flush_due() {
   local reason="check: informational status batch ready (UNREAD STATUS)" unread
   [ -e "$INFO_BATCH_MARKER" ] || return 0
   [ "$(age_of "$INFO_BATCH_MARKER")" -ge "$INFO_BATCH_SECS" ] || return 0
   if ! unread=$(scan_unread_surface_lines "$STATE"); then
-    unread=unknown
+    if [ "$INFO_BATCH_SCAN_FAILURE_LOGGED" -eq 0 ]; then
+      triage_log "informational batch flush deferred: unread status scan failed; retrying next cycle"
+      INFO_BATCH_SCAN_FAILURE_LOGGED=1
+    fi
+    return 0
   fi
   if [ -z "$unread" ]; then
     rm -f "$INFO_BATCH_MARKER"
