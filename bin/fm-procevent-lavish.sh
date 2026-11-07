@@ -69,10 +69,14 @@
 # Closing a review surface that carried nothing is the single most common Lavish
 # result: the captain reads a board, says nothing, and closes it. Announcing that
 # put a wake in front of the handler whose entire content was that nothing
-# happened. `silent` therefore holds two narrow, positively-determined shapes -
+# happened. `silent` therefore holds three narrow, positively-determined shapes -
 # a session this adapter classifies `ended` that carries no queued content block
-# at all, or `browser_disconnected`, which carries no answer while the session
-# remains open - and every other result stays announced.
+# at all, `browser_disconnected`, which carries no answer while the session
+# remains open, and the poll interruption described under BOUNDED QUIET RETRY
+# below, optionally followed only by lavish-axi's `help[` lines, which the
+# server answered while keeping the session's marks - and every other result
+# stays announced. (Current lavish-axi appends that help line, so the exact
+# two-line retry match below no longer fires and the interruption is captured.)
 #
 # Deliberately narrow, in both directions. A `Send & End` close carrying the
 # captain's actual answer arrives as `status: feedback` with `session_ended`, so
@@ -738,16 +742,29 @@ result_has_queued_content() {  # <result-file>
   ' "$1"
 }
 
+# Whether a captured result is the poll interruption the header names: its two
+# exact lines, then nothing but `help[` lines.
+result_is_poll_interruption() {  # <result-file>
+  awk '
+    NR == 1 { ok = ($0 == "error: Lavish Editor poll response was interrupted"); next }
+    NR == 2 { ok = ok && ($0 == "code: SERVER_ERROR"); next }
+    { ok = ok && (index($0, "help[") == 1) }
+    END { exit !(ok && NR >= 2) }
+  ' "$1"
+}
+
 # Whether a captured result is a routine no-op the runner should record without
 # announcing, for the generic runner's silence seam. Lavish's notion of "nothing
 # was said" lives here and nowhere else: an ended session carrying no queued
 # content block is a board the captain closed without saying anything, and the
-# handler learns nothing from being told. Anything else - a real answer, a
+# handler learns nothing from being told; a poll interruption carries no answer
+# and reconcile restarts the listener. Anything else - a real answer, a
 # missing or waiting session, an unreadable result - is announced.
 cmd_silent() {
   local file=${1-} content_rc
   [ -n "$file" ] || usage
   [ -f "$file" ] && [ ! -L "$file" ] || die "result file does not exist: $file"
+  result_is_poll_interruption "$file" && return 0
   [ "$(cmd_classify "$file")" = disconnected ] && return 0
   [ "$(cmd_classify "$file")" = ended ] || return 1
   result_has_queued_content "$file"
