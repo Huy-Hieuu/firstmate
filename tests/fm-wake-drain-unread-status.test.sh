@@ -48,9 +48,11 @@ test_incident_note_answer_buried_under_routine_note_surfaces_both() {
 
   grep -F 'UNREAD STATUS' "$out" >/dev/null \
     || fail "the incident shape produced no UNREAD STATUS section: $(cat "$out")"
-  grep -F 'task1 note: captain said use REST not RPC' "$out" >/dev/null \
-    || fail "the buried answer note was not surfaced: $(cat "$out")"
-  grep -F 'task1 note: re-read acknowledgement' "$out" >/dev/null \
+  # Each row carries the section label, so a reader that filters the drain down
+  # to its labelled lines still sees every unread row.
+  grep -F 'UNREAD STATUS: task1 note: captain said use REST not RPC' "$out" >/dev/null \
+    || fail "the buried answer note was not surfaced as a labelled row: $(cat "$out")"
+  grep -F 'UNREAD STATUS: task1 note: re-read acknowledgement' "$out" >/dev/null \
     || fail "the newest routine note was dropped while surfacing the answer: $(cat "$out")"
   pass "a note: answer buried under a later routine note: is surfaced with both lines"
 }
