@@ -14,8 +14,8 @@
 # charters still use a single `{TASK}` charter fill. Firstmate may adjust other
 # sections when the task genuinely deviates (e.g. working an existing external
 # PR instead of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--forge <none|gerrit|forgejo|external> [--shape squash]] [--pr <auto|manual>] [--herdr-lab]
-#        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch-prefix <prefix>] [--base-branch <branch>] [--sparse <dir>[,<dir>...]]... [--forge <none|gerrit|forgejo|external> [--shape squash]] [--pr <auto|manual>] [--herdr-lab]
+#        fm-brief.sh <task-id> <repo-name> --scout [--base-branch <branch>] [--sparse <dir>[,<dir>...]]... [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
 #   data/<task-id>/report.md (no branch, no push, no PR) and the worktree is scratch.
@@ -67,6 +67,15 @@
 # Definition of done then targets that branch with its pull request.
 # bin/fm-dod-lib.sh's fm_base_branch_valid owns which deliveries accept one.
 # Refused on --secondmate.
+# --sparse <dir>[,<dir>...] names the task's own directories in a project that
+# registers a sparse baseline (bin/fm-project-mode.sh --sparse); it may be
+# repeated, and bin/fm-dod-lib.sh's fm_sparse_paths_norm owns the directory
+# grammar and the sorted, deduplicated form. It writes a "Sparse checkout:
+# <dirs>" line under `# Setup`, which bin/fm-spawn.sh requires to agree with the
+# same --sparse it is passed to create the task's sparse copy (its header owns
+# that contract), and tells the worker which paths are present and how to add
+# one. Like --mode, the registry baseline is never read here. Refused on
+# --secondmate.
 # --forge names the project's forge, defaults to none, and is orthogonal to --mode
 # exactly as the registry's `forge=` token is. It is the captain's confirmed
 # registry binding, read from data/projects.md at intake and passed here; this
@@ -225,6 +234,7 @@ BRANCH_PREFIX=fm/
 BRANCH_PREFIX_SET=0
 BASE_BRANCH=
 BASE_BRANCH_SET=0
+SPARSE_LISTS=()
 FORGE=none
 FORGE_SET=0
 SHAPE=
@@ -246,6 +256,7 @@ for a in "$@"; do
       mode) MODE=$a; MODE_SET=1 ;;
       branch-prefix) BRANCH_PREFIX=$a; BRANCH_PREFIX_SET=1 ;;
       base-branch) BASE_BRANCH=$a; BASE_BRANCH_SET=1 ;;
+      sparse) SPARSE_LISTS+=("$a") ;;
       forge) FORGE=$a; FORGE_SET=1 ;;
       shape) SHAPE=$a; SHAPE_SET=1 ;;
       pr) PR_TEXT=$a; PR_TEXT_SET=1 ;;
@@ -267,6 +278,8 @@ for a in "$@"; do
     --branch-prefix=*) BRANCH_PREFIX=${a#--branch-prefix=}; BRANCH_PREFIX_SET=1 ;;
     --base-branch) want_value="base-branch" ;;
     --base-branch=*) BASE_BRANCH=${a#--base-branch=}; BASE_BRANCH_SET=1 ;;
+    --sparse) want_value=sparse ;;
+    --sparse=*) SPARSE_LISTS+=("${a#--sparse=}") ;;
     --forge) want_value=forge ;;
     --forge=*) FORGE=${a#--forge=}; FORGE_SET=1 ;;
     --pr) want_value="pr" ;;
@@ -353,6 +366,18 @@ if [ "$BASE_BRANCH_SET" -eq 1 ]; then
     exit 1
   fi
   fm_base_branch_valid "$BASE_BRANCH" "$MODE" "$FORGE" "fm-brief.sh --base-branch" || exit 1
+fi
+SPARSE=
+if [ "${#SPARSE_LISTS[@]}" -gt 0 ]; then
+  if [ "$KIND" = secondmate ]; then
+    echo "error: --sparse applies only to ship and scout briefs; a secondmate home is not a sparse copy" >&2
+    exit 1
+  fi
+  SPARSE=$(fm_sparse_paths_norm "fm-brief.sh --sparse" "${SPARSE_LISTS[@]}") || exit 1
+  [ -n "$SPARSE" ] || {
+    echo "error: --sparse takes at least one directory" >&2
+    exit 1
+  }
 fi
 if [ "$KIND" != ship ]; then
   [ "$UPSTREAM_CONSENT_SET" -eq 0 ] || {
@@ -694,6 +719,12 @@ if [ -n "$BASE_BRANCH" ]; then
 Base branch: $BASE_BRANCH"
 else
   SETUP_BASE="You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch."
+fi
+if [ -n "$SPARSE" ]; then
+  SETUP_BASE="$SETUP_BASE
+Sparse checkout: $SPARSE
+This copy is a sparse checkout: besides the repository's top-level files it holds only the project's registered baseline directories and the task directories on the line above, and \`git sparse-checkout list\` prints every directory present.
+If the work genuinely needs another directory, run \`git sparse-checkout add <dir>\` in this copy; never run \`git sparse-checkout disable\` or \`git sparse-checkout set\`, which would check out the whole repository or drop directories already present."
 fi
 
 if [ "$KIND" = scout ]; then

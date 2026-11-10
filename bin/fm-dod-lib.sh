@@ -277,6 +277,54 @@ fm_brief_base_branches() {  # <brief>
   ' "$1"
 }
 
+# A sparse task copy (bin/fm-spawn.sh's header owns that contract) is a
+# cone-mode sparse checkout of a directory set. This is the one owner of the
+# set's grammar: an entry is a repository-relative directory made of
+# [A-Za-z0-9._-] components joined by "/", where no component is "." or ".."
+# or starts with "-"; trailing slashes are dropped. Each argument may hold
+# several entries separated by commas. Prints the entries sorted, deduplicated,
+# and comma-joined (nothing for none); refuses a malformed or empty entry,
+# naming it and <caller>.
+fm_sparse_paths_norm() {  # <caller> [<list>...]
+  local caller=$1 list entry component
+  local -a entries=() parts components
+  shift
+  for list in "$@"; do
+    IFS=, read -r -a parts <<<"$list"
+    [ "${list%,}" = "$list" ] || parts+=("")
+    for entry in ${parts[@]+"${parts[@]}"}; do
+      while [ "${entry%/}" != "$entry" ]; do entry=${entry%/}; done
+      if ! [[ $entry =~ ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$ ]]; then
+        echo "error: $caller: sparse directory '$entry' is not a repository-relative directory of letters, digits, '.', '_', and '-' joined by '/'" >&2
+        return 1
+      fi
+      IFS=/ read -r -a components <<<"$entry"
+      for component in "${components[@]}"; do
+        case "$component" in
+          . | .. | -*)
+            echo "error: $caller: sparse directory '$entry' has the component '$component'; name a directory inside the repository" >&2
+            return 1
+            ;;
+        esac
+      done
+      entries+=("$entry")
+    done
+  done
+  [ "${#entries[@]}" -gt 0 ] || return 0
+  printf '%s\n' "${entries[@]}" | LC_ALL=C sort -u | paste -sd, -
+}
+
+# Print the value of every "Sparse checkout: <dirs>" line under the brief's
+# `# Setup` heading (bin/fm-brief.sh --sparse writes one); return 1 when there
+# is none. The same text anywhere else is prose and ignored.
+fm_brief_sparse_paths() {  # <brief>
+  awk '
+    /^# / { setup = ($0 == "# Setup") }
+    setup && sub(/^Sparse checkout: /, "") { print; n++ }
+    END { exit !n }
+  ' "$1"
+}
+
 fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id> [branch] [<forge>] [<base>]
   local mode=$1 id=$2 forge=${4:-none} base=${5:-}
   local branch=${3:-fm/$id} target='the default branch'

@@ -40,6 +40,9 @@ cat > "$DATA/projects.md" <<'EOF'
 - hand-forgejo [no-mistakes forge=forgejo pr=manual] - a bound forge (added 2026-01-01)
 - hand-empty [no-mistakes pr=] - an empty value (added 2026-01-01)
 - hand-auto [no-mistakes pr=auto] - auto is the absence of the token, not a value (added 2026-01-01)
+- mono [direct-PR sparse=tools,common-libs] - a monorepo with a sparse baseline (added 2026-01-01)
+- mono-first [sparse=tools no-mistakes +yolo branch=] - sparse token first, order must not matter (added 2026-01-01)
+- mono-empty [direct-PR sparse=] - an empty sparse value (added 2026-01-01)
 EOF
 
 run_mode() {
@@ -160,5 +163,29 @@ assert_contains "$err" "pr=manual" "the unknown pr value refusal did not name th
 err=$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" --pr hand-direct 2>&1 >/dev/null)
 assert_contains "$err" "only a no-mistakes ship takes it" "the direct-PR refusal did not say why"
 pass "fm-project-mode: pr=manual refuses another mode, a bound forge, an empty value, and an unknown value, but leaves --forge answerable"
+
+run_sparse() {
+  FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" --sparse "$1" 2>/dev/null
+}
+[ "$(run_sparse mono)" = "tools,common-libs" ] || fail "sparse= after the mode token did not resolve: $(run_sparse mono)"
+[ "$(run_mode mono)" = "direct-PR off" ] || fail "sparse= changed the default posture output: $(run_mode mono)"
+[ "$(run_sparse mono-first)" = "tools" ] || fail "sparse= placed first did not resolve: $(run_sparse mono-first)"
+[ "$(run_mode mono-first)" = "no-mistakes on" ] || fail "sparse= placed first displaced the mode or +yolo: $(run_mode mono-first)"
+[ "$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" --branch-prefix mono-first 2>/dev/null)" = "" ] \
+  || fail "sparse= placed first displaced the empty branch= override"
+for name in legacy flagged unregistered-project; do
+  out=$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" --sparse "$name" 2>&1)
+  status=$?
+  [ "$status" -eq 0 ] && [ -z "$out" ] || fail "--sparse on $name without a token must print nothing and succeed (status $status, got '$out')"
+done
+out=$(FM_DATA_OVERRIDE="$TMP_ROOT/no-registry" "$PROJECT_MODE" --sparse mono 2>&1)
+[ "$?" -eq 0 ] && [ -z "$out" ] || fail "--sparse without a registry must print nothing and succeed (got '$out')"
+out=$(run_sparse mono-empty)
+status=$?
+[ "$status" -eq 3 ] && [ -z "$out" ] || fail "an empty sparse= must refuse under --sparse (status $status, got '$out')"
+err=$(FM_DATA_OVERRIDE="$DATA" "$PROJECT_MODE" --sparse mono-empty 2>&1 >/dev/null)
+assert_contains "$err" "empty sparse binding" "the empty sparse= refusal did not name the empty value"
+[ "$(run_mode mono-empty)" = "direct-PR off" ] || fail "an empty sparse= broke the default posture output: $(run_mode mono-empty)"
+pass "fm-project-mode: --sparse reports the registered baseline in any token order, nothing without one, and refuses an empty value without touching other forms"
 
 echo "# fm-project-mode.test.sh: all assertions passed"

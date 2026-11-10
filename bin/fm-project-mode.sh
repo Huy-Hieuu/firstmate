@@ -11,6 +11,16 @@
 # default output stays the same two words for every project, bound or not.
 # With --pr it prints one word: the project's registered PR-text posture,
 # auto|manual, "auto" when the project registers none.
+# With --sparse it prints the project's registered sparse baseline: the
+# comma-separated directory list of its `sparse=<dir>,<dir>` token exactly as
+# registered, or nothing when the project registers none, is unregistered, or
+# the registry is absent. A registered baseline makes bin/fm-spawn.sh create
+# every ship and scout copy of that project as a cone-mode sparse checkout of
+# the baseline plus the task's own --sparse directories, and refuse a task that
+# names none (bin/fm-spawn.sh's header owns that contract; bin/fm-dod-lib.sh's
+# fm_sparse_paths_norm owns the directory grammar). An empty `sparse=` token is
+# REFUSED in the --sparse form (nothing on stdout, exit status 3), because it
+# would silently mean a full checkout; no other output form reads the token.
 #
 # MECHANICAL CONSUMERS ONLY. This answers "what posture did the captain register
 # for this project", never "how does this task ship". A task's delivery mode,
@@ -23,7 +33,8 @@
 # and --forge for bin/fm-spawn.sh's forge agreement and yolo refusal and for
 # bin/fm-promote.sh, which takes the forge binding from here because it is a
 # project fact rather than a task choice. --pr is read the same way by
-# bin/fm-spawn.sh's PR-text agreement and by bin/fm-promote.sh.
+# bin/fm-spawn.sh's PR-text agreement and by bin/fm-promote.sh. --sparse is read
+# by bin/fm-spawn.sh alone, for its sparse-copy baseline.
 #
 # Registry line format (data/projects.md):
 #   - <name> - <desc> (added <date>)                                 -> no-mistakes off fm/  (legacy default)
@@ -34,9 +45,10 @@
 #   - <name> [<mode> forge=forgejo] - <desc> (added <date>)          -> <mode> <yolo>, --forge forgejo
 #   - <name> [direct-PR forge=external] - <desc> (added <date>)      -> direct-PR off, --forge external
 #   - <name> [no-mistakes pr=manual] - <desc> (added <date>)         -> no-mistakes off, --pr manual
+#   - <name> [direct-PR sparse=tools,common-libs] - <desc>            -> direct-PR off, --sparse tools,common-libs
 #   <name> may contain spaces; it ends at the literal " [" or " - " that follows it.
-#   Bracket tokens are order-independent: +yolo, branch=<prefix>, forge=<value>, and
-#   pr=<value> are recognized by their own shape wherever they appear, and whichever token is
+#   Bracket tokens are order-independent: +yolo, branch=<prefix>, forge=<value>,
+#   pr=<value>, and sparse=<dirs> are recognized by their own shape wherever they appear, and whichever token is
 #   left over is the mode. <prefix> must not contain a space; an empty override
 #   ("branch=") resolves to "" for a bare "<task-id>" ship branch instead of the
 #   legacy "fm/<task-id>".
@@ -113,8 +125,8 @@
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" (or
 # "fm/" under --branch-prefix) and warns to stderr, so a typo never silently
 # drops the gate. Other annotation tokens are ignored, as they always were, keyed
-# ones included: a `<key>=<value>` token whose key is none of `forge`, `branch`, and
-# `pr` resolves as it did before the forge existed, and in the mode slot it
+# ones included: a `<key>=<value>` token whose key is none of `forge`, `branch`,
+# `pr`, and `sparse` resolves as it did before the forge existed, and in the mode slot it
 # is read as an unknown mode. A key one or two edits from `forge` (such as
 # `forg=` or `Forge=`) is still ignored, with one stderr warning naming the token
 # and the forge=gerrit, forge=forgejo, and forge=external spellings. The one
@@ -128,7 +140,7 @@
 # to the forge binding, so it prints even when the forge token is malformed;
 # every path that reads the forge binding (default, --forge, and spawn's
 # forge-agreement check) still refuses.
-# Usage: fm-project-mode.sh [--raw|--branch-prefix|--forge|--pr] <project-name>
+# Usage: fm-project-mode.sh [--raw|--branch-prefix|--forge|--pr|--sparse] <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -140,15 +152,20 @@ RAW=0
 BRANCH_PREFIX_QUERY=0
 WANT_FORGE=0
 WANT_PR=0
+WANT_SPARSE=0
 case "${1:-}" in
   --raw) RAW=1; shift ;;
   --branch-prefix) BRANCH_PREFIX_QUERY=1; shift ;;
   --forge) WANT_FORGE=1; shift ;;
   --pr) WANT_PR=1; shift ;;
+  --sparse) WANT_SPARSE=1; shift ;;
 esac
-NAME=${1:?usage: fm-project-mode.sh [--raw|--branch-prefix|--forge|--pr] <project-name>}
+NAME=${1:?usage: fm-project-mode.sh [--raw|--branch-prefix|--forge|--pr|--sparse] <project-name>}
 
 if [ ! -f "$REG" ]; then
+  if [ "$WANT_SPARSE" -eq 1 ]; then
+    exit 0
+  fi
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
   if [ "$BRANCH_PREFIX_QUERY" -eq 1 ]; then
     echo "fm/"
@@ -158,9 +175,10 @@ if [ ! -f "$REG" ]; then
 fi
 
 # awk emits one "near <token>" line per keyed token whose key is a near miss of
-# `forge`, then "posture <mode> <yolo> <forge> <pr> <branch-prefix>" (branch-prefix
+# `forge`, then "posture <mode> <yolo> <forge> <pr> <sparse> <branch-prefix>" (branch-prefix
 # is the raw prefix, defaulting to "fm/"; forge is `none` or the whole
-# `forge=<value>` token and pr is `auto` or the whole `pr=<value>` token, so an
+# `forge=<value>` token, pr is `auto` or the whole `pr=<value>` token, and
+# sparse is `none` or the whole `sparse=<dirs>` token, so an
 # empty value survives the split), or nothing if the project is
 # absent. Every other token beside the mode is ignored, exactly as before either
 # annotation existed.
@@ -188,15 +206,15 @@ parsed=$(awk -v n="$NAME" '
     if (substr($0, 1, plen) != prefix) next
     after = substr($0, plen + 1);
     if (after != "" && substr(after, 1, 2) != " [" && substr(after, 1, 3) != " - ") next
-    mode="no-mistakes"; yolo="off"; branch="fm/"; forge="none"; pr="auto";
+    mode="no-mistakes"; yolo="off"; branch="fm/"; forge="none"; pr="auto"; sparse="none";
     if (substr(after, 1, 2) == " [") {
       s="";
       nk = split(after, rest, " ");
       for (i=1; i<=nk; i++) { s = s (s==""?"":" ") rest[i]; if (rest[i] ~ /\]$/) break }
       gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
       k = split(s, a, " ");
-      # Tokens are order-independent: +yolo, branch=<prefix>, forge=<value>, and
-      # pr=<value> are recognized by their own shape wherever they appear, keyed tokens
+      # Tokens are order-independent: +yolo, branch=<prefix>, forge=<value>,
+      # pr=<value>, and sparse=<dirs> are recognized by their own shape wherever they appear, keyed tokens
       # that are neither are ignored (with a near-miss warning for the forge
       # spelling), and the first token left over is the mode.
       mode_set = 0
@@ -205,6 +223,7 @@ parsed=$(awk -v n="$NAME" '
         if (a[j] ~ /^branch=/) { branch = substr(a[j], 8); continue }
         if (a[j] ~ /^forge=/) { forge = a[j]; continue }
         if (a[j] ~ /^pr=/) { pr = a[j]; continue }
+        if (a[j] ~ /^sparse=/) { sparse = a[j]; continue }
         if (a[j] ~ /^[^=]+=/) {
           key = substr(a[j], 1, index(a[j], "=") - 1);
           e = dist(key, "forge");
@@ -217,11 +236,14 @@ parsed=$(awk -v n="$NAME" '
     }
     # branch is printed LAST: an empty branch= override must survive as an
     # empty final field, which only holds when nothing follows it.
-    print "posture", mode, yolo, forge, pr, branch; exit
+    print "posture", mode, yolo, forge, pr, sparse, branch; exit
   }
 ' "$REG")
 
 if [ -z "$parsed" ]; then
+  if [ "$WANT_SPARSE" -eq 1 ]; then
+    exit 0
+  fi
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
   if [ "$BRANCH_PREFIX_QUERY" -eq 1 ]; then
     echo "fm/"
@@ -239,13 +261,24 @@ while IFS=' ' read -r kind rest; do
 done <<EOF
 $parsed
 EOF
-while IFS=' ' read -r m y f p b; do
-  mode=$m; yolo=$y; rest_forge=$f; rest_pr=$p; branch=$b
+while IFS=' ' read -r m y f p s b; do
+  mode=$m; yolo=$y; rest_forge=$f; rest_pr=$p; rest_sparse=$s; branch=$b
 done <<EOF
 $posture
 EOF
 forge=${rest_forge:-none}
 pr=${rest_pr:-auto}
+sparse=${rest_sparse:-none}
+if [ "$WANT_SPARSE" -eq 1 ]; then
+  case "$sparse" in
+    none) ;;
+    sparse=)
+      echo "refused: empty sparse binding \"sparse=\" registered for $NAME in $REG; name the baseline directories every sparse copy of $NAME holds, such as sparse=tools,common-libs, or drop the token for full checkouts" >&2
+      exit 3 ;;
+    *) echo "${sparse#sparse=}" ;;
+  esac
+  exit 0
+fi
 case "$mode" in
   no-mistakes|direct-PR|local-only|no-mistakes-prod-only) ;;
   *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2; mode=no-mistakes; yolo=off; branch=fm/ ;;
