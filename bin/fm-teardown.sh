@@ -184,6 +184,13 @@
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
+# A task whose metadata records sparse= (bin/fm-spawn.sh --sparse) owns a
+# sparse copy firstmate created, not a pool slot. It runs the same safety checks
+# and branch cleanup; then, instead of a Treehouse return, teardown removes the
+# copy with `git worktree remove --force` and its empty per-task container, and
+# only when the recorded worktree is exactly the copy bin/fm-wake-lib.sh's
+# fm_sparse_copy_path names for this task and the project still lists it. On
+# Orca, `orca worktree rm` removes the copy and teardown drops the container.
 # A Herdr presentation journal never authorizes cleanup. Teardown still closes
 # only the exact task pane from ordinary endpoint metadata and never calls
 # `workspace close`. It retires the non-authoritative journal only when a
@@ -2164,6 +2171,31 @@ teardown_note_dirty_return() {
   printf '%s\n' "$residue" | sed 's/^/  /' >&2
 }
 
+# A sparse task copy (bin/fm-spawn.sh --sparse, recorded as sparse= in the task
+# metadata) is firstmate's own linked worktree, not a pool slot, so teardown
+# removes it instead of returning it. It does so only at the exact path
+# bin/fm-wake-lib.sh's fm_sparse_copy_path names for this task and only while
+# the project still lists it as a worktree, so an edited record can never aim
+# the removal at another copy. The caller has already proved the copy holds no
+# unlanded work; the optional check reruns that proof right before removal.
+teardown_remove_sparse_copy() {  # [post-check]
+  local post_check=${1:-} expected actual
+  expected=$(fm_sparse_copy_path "$PROJ" "$ID") || expected=
+  actual=$(canonical_existing_dir "$WT") || actual=
+  if [ -z "$expected" ] || [ "$actual" != "$expected" ] || ! worktree_registered_for_project "$PROJ" "$WT"; then
+    echo "REFUSED: task $ID records a sparse copy, but its worktree $WT is not the copy ${expected:-<unresolvable>} of $PROJ that firstmate created for it; nothing was removed" >&2
+    return 1
+  fi
+  if [ -n "$post_check" ] && ! "$post_check"; then
+    echo "teardown: sparse copy removal aborted because safety checks failed" >&2
+    return 1
+  fi
+  fm_sparse_copy_remove "$PROJ" "$WT" || {
+    echo "error: could not remove the sparse copy $WT of $PROJ for $ID; inspect it, then run 'git -C $PROJ worktree remove --force $WT' and remove its empty directory $(dirname "$WT")" >&2
+    return 1
+  }
+}
+
 # A worker may have pushed from another checkout, so tracking refs that do not
 # show the work prove nothing until they are refreshed. Runs at most once per
 # teardown, through bin/fm-dod-lib.sh's fm_dod_refresh_remote_refs, which owns
@@ -4087,6 +4119,8 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
       || { endpoint_close_refusal "$ID" "$BACKEND" "$T" 0; exit 1; }
   fi
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
+  # Orca removed the sparse copy itself; drop its now-empty per-task container.
+  [ -z "$(meta_value "$META" sparse)" ] || rmdir "$(dirname "$WT")" 2>/dev/null || true
 elif [ "$KIND" != secondmate ] && ! teardown_owns_worktree; then
   :
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
@@ -4117,18 +4151,22 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   if [ "$KIND" = scout ] || [ "$FORCE" = "--force" ]; then
     teardown_scrub_scratch_copy "$WT" || exit 1
   fi
-  wt_pool_slot=0
-  fm_treehouse_pool_slot "$PROJ" "$WT" && wt_pool_slot=1
-  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
-    echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
-    exit 1
-  }
-  [ "$wt_pool_slot" = 0 ] || teardown_note_dirty_return "$WT"
-  # The slot is back in the pool, so this task's claim on it is spent. Dropping
-  # it here - and only after a return that succeeded - keeps a returned slot
-  # unclaimed until its next holder claims it, and leaves the claim in place
-  # whenever the return did not actually happen.
-  fm_treehouse_slot_owner_release "$WT" "$ID"
+  if [ -n "$(meta_value "$META" sparse)" ]; then
+    teardown_remove_sparse_copy "$post_lock_cleanup_check" || exit 1
+  else
+    wt_pool_slot=0
+    fm_treehouse_pool_slot "$PROJ" "$WT" && wt_pool_slot=1
+    teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
+      echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
+      exit 1
+    }
+    [ "$wt_pool_slot" = 0 ] || teardown_note_dirty_return "$WT"
+    # The slot is back in the pool, so this task's claim on it is spent. Dropping
+    # it here - and only after a return that succeeded - keeps a returned slot
+    # unclaimed until its next holder claims it, and leaves the claim in place
+    # whenever the return did not actually happen.
+    fm_treehouse_slot_owner_release "$WT" "$ID"
+  fi
 fi
 
 if [ "$BACKEND" = rex ] && [ "$KIND" = secondmate ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then

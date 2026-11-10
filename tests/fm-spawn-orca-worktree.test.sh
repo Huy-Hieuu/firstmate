@@ -63,7 +63,51 @@ case "$1 $2" in
     wt="$DIR/orca-worktrees/$name"
     mkdir -p "$DIR/orca-worktrees"
     git -C "$DIR/project" worktree add --quiet -b "orca-$name" "$wt" >&2 || exit 1
+    # FM_TEST_ORCA_CREATE_FAIL reports a failure after the copy exists, as Orca
+    # does when a later create step fails.
+    if [ "${FM_TEST_ORCA_CREATE_FAIL:-0}" = 1 ]; then
+      printf '{"ok":false,"error":{"code":"worktree_create_failed","message":"simulated setup failure"}}\n'
+      exit 1
+    fi
     printf '{"ok":true,"result":{"worktree":{"id":"wt-%s","path":"%s"}}}\n' "$name" "$wt"
+    exit 0
+    ;;
+  "worktree show")
+    # Resolve path:<p> against the project's linked worktrees, the way Orca lists
+    # every worktree of a repository it knows, and name:<n> against the copies
+    # this fake created.
+    sel=
+    prev=
+    for a in "$@"; do
+      [ "$prev" = --worktree ] && sel=$a
+      prev=$a
+    done
+    case "$sel" in
+      path:*)
+        wt=${sel#path:}
+        git -C "$DIR/project" worktree list --porcelain | grep -qxF "worktree $wt" || wt= ;;
+      name:*)
+        wt="$DIR/orca-worktrees/${sel#name:}"
+        [ -d "$wt" ] || wt= ;;
+      *) wt= ;;
+    esac
+    if [ -z "$wt" ]; then
+      printf '{"ok":false,"error":{"code":"selector_not_found","message":"selector_not_found"}}\n'
+      exit 1
+    fi
+    printf '{"ok":true,"result":{"worktree":{"id":"repo1::%s","path":"%s"}}}\n' "$wt" "$wt"
+    exit 0
+    ;;
+  "worktree rm")
+    sel=
+    prev=
+    for a in "$@"; do
+      [ "$prev" = --worktree ] && sel=$a
+      prev=$a
+    done
+    printf '%s\n' "$sel" >> "$DIR/orca-rm.log"
+    git -C "$DIR/project" worktree remove --force "${sel#id:repo1::}" >&2 || exit 1
+    printf '{"ok":true}\n'
     exit 0
     ;;
   "terminal create")
@@ -181,6 +225,89 @@ EOF
   [ "$(cd "$wt_recorded" && git rev-parse --show-toplevel)" = "$(cd "$wt_recorded" && pwd -P)" ] \
     || fail "the recorded worktree is not the isolated worktree Orca created"
   pass "an Orca-backed fresh spawn enters the worktree Orca created for it, instead of hard-refusing on the post-launch proof"
+}
+
+# orca_case <case-dir> <registry-tokens>: a home and a project with several
+# top-level directories registered with the given bracket tokens.
+orca_case() {
+  local case_dir=$1 tokens=$2 home d
+  home="$case_dir/home"
+  mkdir -p "$home/data" "$home/projects" "$home/state" "$home/config"
+  touch "$home/state/.last-watcher-beat"
+  printf 'codex\n' > "$home/config/crew-harness"
+  printf 'manual\n' > "$home/config/backlog-backend"
+  printf '%s\n' '## Projects' "- project [$tokens] - orca test project (added 2026-01-01)" > "$home/data/projects.md"
+  fm_git_init_commit "$case_dir/project"
+  for d in tools alexis plutus; do
+    mkdir -p "$case_dir/project/$d"
+    printf '%s\n' "$d" > "$case_dir/project/$d/file.txt"
+  done
+  git -C "$case_dir/project" add -A
+  git -C "$case_dir/project" -c user.name=t -c user.email=t@t commit -qm dirs
+}
+
+orca_brief() {  # <home> <id> [setup line]
+  mkdir -p "$1/data/$2"
+  printf '%s\n' '# Task' "## Captain's intent" "Exercise an Orca-backed spawn for $2." '' \
+    '## Firstmate spec' 'Confirm the launch enters the expected copy.' '' '# Setup' "${3:-}" > "$1/data/$2/brief.md"
+}
+
+orca_spawn() {  # <case-dir> <fakebin> <id> [fm-spawn args...]
+  local case_dir=$1 fb=$2 id=$3 home=$1/home
+  shift 3
+  FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$case_dir/user-home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_TEST_ORCA_DIR="$case_dir" PATH="$fb:$PATH" \
+    "$SPAWN" "$id" "$case_dir/project" "$@" 2>&1
+}
+
+# A sparse-registered project on backend=orca gets the copy firstmate creates,
+# and Orca only adopts it and opens the terminal there; Orca never creates one.
+test_orca_sparse_spawn_adopts_the_copy_firstmate_created() {
+  local case_dir id=orca-sparse-a3 fb out status copy listed
+  case_dir="$TMP_ROOT/sparse"
+  orca_case "$case_dir" 'direct-PR sparse=tools'
+  orca_brief "$case_dir/home" "$id" 'Sparse checkout: alexis'
+  fb=$(make_orca_fakebin "$case_dir")
+  copy="$(cd "$case_dir" && pwd -P)/.fm-sparse/$id/project"
+
+  out=$(orca_spawn "$case_dir" "$fb" "$id" --mode direct-PR --yolo off --sparse alexis --backend orca)
+  status=$?
+
+  expect_code 0 "$status" "a sparse Orca spawn should succeed"$'\n'"$out"
+  assert_grep "worktree=$copy" "$case_dir/home/state/$id.meta" "meta did not record the firstmate-created sparse copy"
+  assert_grep "orca_worktree_id=repo1::$copy" "$case_dir/home/state/$id.meta" "meta did not record the adopted Orca worktree id"
+  assert_grep "sparse=alexis,tools" "$case_dir/home/state/$id.meta" "meta did not record the effective directory set"
+  [ ! -e "$case_dir/orca-worktrees" ] || fail "Orca was asked to create a worktree for a sparse task"
+  listed=$(cd "$copy" && find . -mindepth 1 -maxdepth 1 ! -name .git | LC_ALL=C sort | tr '\n' ' ')
+  case "$listed" in
+    *./plutus*) fail "the adopted sparse copy holds a directory outside its set: $listed" ;;
+    *./alexis*./tools*) ;;
+    *) fail "the adopted sparse copy lacks its directories: $listed" ;;
+  esac
+  pass "a sparse Orca spawn adopts the copy firstmate created and records it"
+}
+
+# A failed `orca worktree create` names Orca's error code and message, and a
+# clean copy Orca left behind is removed rather than stranded.
+test_orca_create_failure_reports_detail_and_removes_leftover() {
+  local case_dir id=orca-createfail-a4 fb out status
+  case_dir="$TMP_ROOT/createfail"
+  orca_case "$case_dir" 'direct-PR'
+  orca_brief "$case_dir/home" "$id"
+  fb=$(make_orca_fakebin "$case_dir")
+  fm_test_fake_sleep_noop "$fb"
+
+  out=$(FM_TEST_ORCA_CREATE_FAIL=1 orca_spawn "$case_dir" "$fb" "$id" --mode direct-PR --yolo off --backend orca)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "a spawn whose orca worktree create failed should fail"
+  assert_contains "$out" "worktree_create_failed: simulated setup failure" "the failure did not name Orca's error"$'\n'"$out"
+  assert_contains "$out" "removed the copy" "the failure did not report removing the leftover copy"$'\n'"$out"
+  [ -z "$(ls -A "$case_dir/orca-worktrees" 2>/dev/null)" ] || fail "the failed create left its copy behind"
+  [ ! -e "$case_dir/home/state/$id.meta" ] || fail "the failed spawn published task metadata"
+  pass "a failed orca worktree create names Orca's error and removes the clean copy it left"
 }
 
 test_orca_relaunch_is_refused_before_the_worktree_carveout_could_run() {
@@ -880,5 +1007,7 @@ test_orca_pane_wins_launch_file_race_at_deadline
 test_orca_snapshot_keeps_raw_bytes_tmux_reports
 test_orca_fresh_spawn_enters_the_worktree_it_created
 test_orca_relaunch_is_refused_before_the_worktree_carveout_could_run
+test_orca_sparse_spawn_adopts_the_copy_firstmate_created
+test_orca_create_failure_reports_detail_and_removes_leftover
 
 echo "# all fm-spawn-orca-worktree tests passed"

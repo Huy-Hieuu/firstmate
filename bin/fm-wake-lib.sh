@@ -2019,6 +2019,57 @@ fm_treehouse_pool_slot() {  # <project-dir> <worktree>
   [ "$project_common" = "$slot_common" ]
 }
 
+# A sparse task copy is a linked worktree firstmate creates itself for one task
+# of a project that registers a `sparse=` baseline (bin/fm-spawn.sh's header
+# owns that contract). Its fixed layout is
+# <project-parent>/.fm-sparse/<task-id>/<project-name>: one container per task
+# beside the project, holding a leaf named like the project as Treehouse slots
+# are. Spawn creates it and teardown removes it; both recognize it only at this
+# exact path.
+fm_sparse_copy_path() {  # <project-dir> <task-id>
+  local project
+  project=$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P) || return 1
+  printf '%s/.fm-sparse/%s/%s\n' "$(dirname "$project")" "$2" "$(basename "$project")"
+}
+
+# Create the task's sparse copy, detached at the project's HEAD, holding only
+# the repository's top-level files and the comma-separated cone directories
+# (bin/fm-dod-lib.sh's fm_sparse_paths_norm validated them). The caller moves
+# it to its fresh base afterwards, as it does any pooled copy. Refuses a
+# container that already exists, so a copy is never shared or reused; on a
+# failure it removes what it created and returns 1. Prints the copy's path.
+fm_sparse_copy_create() {  # <project-dir> <task-id> <dirs>
+  local project=$1 id=$2 dirs=$3 wt container
+  wt=$(fm_sparse_copy_path "$project" "$id") || return 1
+  container=$(dirname "$wt")
+  if [ -e "$container" ] || [ -L "$container" ]; then
+    echo "error: sparse copy container $container already exists; refusing to reuse a copy another task may own" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$container")" && mkdir "$container" || return 1
+  if ! git -C "$project" worktree add --quiet --no-checkout --detach "$wt" HEAD >&2; then
+    rmdir "$container" 2>/dev/null
+    return 1
+  fi
+  if ! printf '%s\n' "$dirs" | tr ',' '\n' | git -C "$wt" sparse-checkout set --cone --stdin >&2 ||
+    ! git -C "$wt" reset --quiet --hard HEAD >&2; then
+    fm_sparse_copy_remove "$project" "$wt"
+    return 1
+  fi
+  printf '%s\n' "$wt"
+}
+
+# Remove a sparse copy and its per-task container. The caller has already
+# proved the copy is the task's own (fm_sparse_copy_path) and holds no work it
+# must keep: this discards the copy's working tree unconditionally.
+fm_sparse_copy_remove() {  # <project-dir> <worktree>
+  local project=$1 wt=$2
+  if [ -d "$wt" ]; then
+    git -C "$project" worktree remove --force "$wt" >&2 || return 1
+  fi
+  rmdir "$(dirname "$wt")" 2>/dev/null || [ ! -e "$(dirname "$wt")" ]
+}
+
 # Slot-owner claim: which task a Treehouse pool slot currently belongs to.
 #
 # Treehouse can record ownership durably: `treehouse get --lease --lease-holder`

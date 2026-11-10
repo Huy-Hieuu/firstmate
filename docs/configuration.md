@@ -2477,6 +2477,20 @@ Firstmate passes it to `bin/fm-brief.sh --pr manual` at intake the same way it p
 The generated brief then has the worker pass `--skip pr,ci` on every `no-mistakes axi run`, write the PR title and body itself, open or update the PR with `gh-axi`, and wait for the PR's checks; `bin/fm-dod-lib.sh` owns that text.
 The token is the thin registry form of no-mistakes' own keep-text option, [kunchenguid/no-mistakes#1648](https://github.com/kunchenguid/no-mistakes/issues/1648), and is meant to map onto it once that exists.
 
+## Sparse task copies (data/projects.md sparse= token)
+
+A project with no `sparse=` token keeps today's behavior: every task gets a full copy from the project's pool or backend.
+A large monorepo whose tasks each touch a few top-level directories is registered with a baseline, for example `[direct-PR sparse=tools,common-libs]`.
+The baseline lists the directories every task needs, and `bin/fm-project-mode.sh --sparse <name>` reads it back; that script's header owns the token grammar and refusals.
+Each task on such a project names its own directories at intake with `bin/fm-brief.sh --sparse <dir>[,<dir>...]`, which records one `Sparse checkout:` line in the brief.
+The spawn then passes the same `--sparse`, and `bin/fm-spawn.sh` refuses a brief, flag, and registry that disagree, so a sparse project never falls back to a full copy by accident.
+
+Firstmate creates the copy itself rather than taking one from a pool: a cone sparse checkout of the baseline plus the task's directories, beside the project at `<project-parent>/.fm-sparse/<task-id>/<project-name>`, started from the same freshened base as any other task.
+Top-level files are always present, and the worker adds a missing directory with `git sparse-checkout add <dir>`.
+Task meta records the effective set as `sparse=`.
+Sparse copies run on `backend=tmux`, and on `backend=orca`, where Orca opens the terminal in the copy firstmate created; other backends refuse `--sparse`.
+`bin/fm-teardown.sh` removes a sparse copy only after the usual landed-work checks pass, and its header owns those rules; `bin/fm-spawn.sh --help` owns the creation mechanics.
+
 ## GitHub Enterprise hosts (config/github-hosts)
 
 `config/github-hosts` is an optional local, gitignored file naming the GitHub Enterprise hosts whose pull request URLs this home accepts, one lowercase hostname per line, such as `leadsonline.ghe.com`.
