@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--base-branch <branch>] [--sparse <dir>[,<dir>...]]... [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
+#        fm-spawn.sh <task-id> <project-dir> --scout [--base-branch <branch>] [--sparse <dir>[,<dir>...]]... [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--dispatch-override <reason>] [--hermes-profile <name>] [--account <entry>] [--backend <name>] [--herdr-resume-lock-wait]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
@@ -59,6 +59,30 @@
 #   and a brief with such a line refuses a spawn without the flag. The spawn records it as
 #   base_branch= in state/<id>.meta, which a relaunch reuses and later review and
 #   cleanup read; it is refused on secondmates and relaunches, and without it
+#   nothing changes.
+#   --sparse <dir>[,<dir>...] (repeatable) names a ship or scout task's own
+#   directories in a project whose registry line carries a `sparse=<dir>,...`
+#   baseline (bin/fm-project-mode.sh --sparse). Such a project gets a sparse
+#   task copy instead of a Treehouse slot or an Orca-created worktree: firstmate
+#   runs `git worktree add --no-checkout --detach` at
+#   <project-parent>/.fm-sparse/<task-id>/<project-name> (bin/fm-wake-lib.sh's
+#   fm_sparse_copy_path owns the layout), sets a cone-mode sparse checkout of the
+#   baseline plus these directories, fills it, then validates and freshens it to
+#   its base exactly like a pooled copy; the worker then makes its branch there
+#   as in any copy. backend=tmux opens its window on that copy; backend=orca
+#   resolves it with `orca worktree show --worktree path:<copy>` and opens only
+#   the terminal through Orca; every other backend is refused. The directories
+#   must agree with the brief's Setup "Sparse checkout:" line
+#   (bin/fm-brief.sh --sparse) in both directions, a sparse-registered project
+#   refuses a spawn without them, and --sparse refuses a project with no
+#   baseline. bin/fm-dod-lib.sh's fm_sparse_paths_norm owns the directory
+#   grammar. The spawn records the effective sorted set as sparse= in
+#   state/<id>.meta, which marks the copy as firstmate's own for
+#   bin/fm-teardown.sh; a relaunch reuses the recorded copy, and --sparse is
+#   refused on secondmates and relaunches. A spawn that fails before its record
+#   survives removes the copy unless a launch was delivered into an endpoint
+#   that is still open or the copy then holds uncommitted work, and names the
+#   removal command when it keeps it. Without the registry token and the flag
 #   nothing changes.
 #   Ship/scout launches always put fm-dod-lib.sh's current worker role scope
 #   first in the private launch-brief overlay, including the exact task-owned
@@ -1001,6 +1025,8 @@ YOLO_SET=0
 BRANCH_PREFIX_SET=0
 BASE_BRANCH=
 BASE_BRANCH_SET=0
+SPARSE_LISTS=()
+SPARSE_SET=0
 UPSTREAM_CONSENT=
 UPSTREAM_CONSENT_SET=0
 TRACEPARENT_SET=0
@@ -1057,6 +1083,10 @@ for a in "$@"; do
     base-branch)
       BASE_BRANCH=$a
       BASE_BRANCH_SET=1
+      ;;
+    sparse)
+      SPARSE_LISTS+=("$a")
+      SPARSE_SET=1
       ;;
     upstream-consent)
       UPSTREAM_CONSENT=$a
@@ -1132,6 +1162,11 @@ for a in "$@"; do
   --base-branch=*)
     BASE_BRANCH=${a#--base-branch=}
     BASE_BRANCH_SET=1
+    ;;
+  --sparse) want_value=sparse ;;
+  --sparse=*)
+    SPARSE_LISTS+=("${a#--sparse=}")
+    SPARSE_SET=1
     ;;
   --upstream-consent) want_value="upstream-consent" ;;
   --upstream-consent=*)
@@ -1255,6 +1290,10 @@ if [ "$RELAUNCH" -eq 1 ]; then
     echo "error: --relaunch reuses the task's recorded base branch; --base-branch cannot override it" >&2
     exit 1
   }
+  [ "$SPARSE_SET" -eq 0 ] || {
+    echo "error: --relaunch reuses the task's recorded copy; --sparse cannot change it" >&2
+    exit 1
+  }
   [ "$UPSTREAM_CONSENT_SET" -eq 0 ] || {
     echo "error: --relaunch reuses the task's recorded upstream consent; --upstream-consent cannot override it" >&2
     exit 1
@@ -1317,6 +1356,10 @@ else
     }
     [ "$KIND" != secondmate ] || [ "$BASE_BRANCH_SET" -eq 0 ] || {
       echo "error: --base-branch applies only to ship and scout spawns; a secondmate charter has no task base" >&2
+      exit 1
+    }
+    [ "$KIND" != secondmate ] || [ "$SPARSE_SET" -eq 0 ] || {
+      echo "error: --sparse applies only to ship and scout spawns; a secondmate runs in its own firstmate home" >&2
       exit 1
     }
     [ "$UPSTREAM_CONSENT_SET" -eq 0 ] || {
@@ -1670,6 +1713,8 @@ BACKEND=
 ORCA_ABORT_CLEANUP=0
 ORCA_WORKTREE_ID=
 ORCA_TERMINAL=
+SPARSE=
+SPARSE_ABORT_CLEANUP=0
 T3CODE_ABORT_CLEANUP=0
 T3CODE_LEASED=0
 T3CODE_HOME_ENV=0
@@ -1976,6 +2021,25 @@ spawn_abort_cleanup() {
       echo "warning: the worktree $WT stays leased to $ID after the failed spawn; once inspected, run 'treehouse return --force $WT' from $PROJ_ABS" >&2
     fi
   fi
+  # A sparse copy belongs to firstmate alone (no pool takes it back), so an
+  # abort that leaves no record removes it while nothing can be working there:
+  # before any launch was delivered, or once the endpoint is closed and the
+  # copy holds no uncommitted work. Otherwise it stays and the warning names the
+  # removal command.
+  if [ "$SPARSE_ABORT_CLEANUP" = 1 ] && [ "$status" -ne 0 ] && [ -n "${WT:-}" ] &&
+    [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ]; then
+    SPARSE_ABORT_CLEANUP=0
+    local sparse_copy_status
+    if { [ "$SPAWN_LAUNCH_SENT" = 0 ] ||
+      { [ "$SPAWN_ENDPOINT_CLOSED" = 1 ] &&
+        sparse_copy_status=$(git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null) &&
+        [ -z "$sparse_copy_status" ]; }; } &&
+      fm_sparse_copy_remove "$PROJ_ABS" "$WT" 2>/dev/null; then
+      :
+    else
+      echo "warning: the sparse copy $WT of $ID stays after the failed spawn; once inspected, run 'git -C $PROJ_ABS worktree remove --force $WT' and remove its empty directory $(dirname "$WT")" >&2
+    fi
+  fi
   # A spawn that aborts after claiming its slot but before its record survives
   # must not leave a claim naming a task no record describes. The release is a
   # read-then-remove, so it runs only while the project lock that wrote the
@@ -2158,6 +2222,9 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
   [ "$BASE_BRANCH_SET" -eq 0 ] || shared_args+=(--base-branch "$BASE_BRANCH")
+  if [ "$SPARSE_SET" -eq 1 ]; then
+    for sparse_list in "${SPARSE_LISTS[@]}"; do shared_args+=(--sparse "$sparse_list"); done
+  fi
   [ "$HERDR_RESUME_LOCK_WAIT" -eq 0 ] || shared_args+=(--herdr-resume-lock-wait)
   [ "$ACCOUNT_SET" -eq 0 ] || shared_args+=(--account "$ACCOUNT_ARG")
   for pair in "${POS[@]}"; do
@@ -4304,6 +4371,47 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
     echo "error: $BRIEF records a Base branch line but the spawn has no --base-branch; pass the brief's base with --base-branch or re-scaffold the brief without one" >&2
     exit 1
   fi
+  # The sparse copy's directory set: the project's registered baseline plus the
+  # task's own directories, which the brief must record identically (header).
+  if [ "$RELAUNCH" -eq 1 ]; then
+    SPARSE=$(fm_meta_get "$RELAUNCH_META" sparse)
+  else
+    SPARSE_PROJECT=$(basename "$PROJ_ABS")
+    SPARSE_BASELINE=$("$FM_ROOT/bin/fm-project-mode.sh" --sparse "$SPARSE_PROJECT") || exit 1
+    SPARSE_TASK=
+    if [ "$SPARSE_SET" -eq 1 ]; then
+      SPARSE_TASK=$(fm_sparse_paths_norm "fm-spawn.sh --sparse" "${SPARSE_LISTS[@]}") || exit 1
+      [ -n "$SPARSE_TASK" ] || {
+        echo "error: --sparse takes at least one directory" >&2
+        exit 1
+      }
+      [ -n "$SPARSE_BASELINE" ] || {
+        echo "error: --sparse needs project $SPARSE_PROJECT to register a sparse baseline (a sparse=<dir>,<dir> token on its data/projects.md line, see bin/fm-project-mode.sh); without one every copy of it is a full checkout" >&2
+        exit 1
+      }
+    elif [ -n "$SPARSE_BASELINE" ]; then
+      echo "error: project $SPARSE_PROJECT registers the sparse baseline sparse=$SPARSE_BASELINE, so its task copies are sparse; name this task's own directories with --sparse <dir>[,<dir>...] here and in its brief (bin/fm-brief.sh --sparse)" >&2
+      exit 1
+    fi
+    SPARSE_BRIEF_LINES=$(fm_brief_sparse_paths "$BRIEF" || true)
+    if [ -n "$SPARSE_TASK" ]; then
+      if [ "$SPARSE_BRIEF_LINES" != "$SPARSE_TASK" ]; then
+        echo "error: $BRIEF must record exactly one Sparse checkout: $SPARSE_TASK line to spawn with --sparse $SPARSE_TASK; scaffold it with bin/fm-brief.sh --sparse $SPARSE_TASK" >&2
+        exit 1
+      fi
+      case "$BACKEND" in
+      tmux | orca) ;;
+      *)
+        echo "error: a sparse task copy runs on backend=tmux or backend=orca only; pass --backend tmux or --backend orca for $ID (backend=$BACKEND would allocate a full copy of $SPARSE_PROJECT)" >&2
+        exit 1
+        ;;
+      esac
+      SPARSE=$(fm_sparse_paths_norm "registry sparse= of $SPARSE_PROJECT" "$SPARSE_BASELINE" "$SPARSE_TASK") || exit 1
+    elif [ -n "$SPARSE_BRIEF_LINES" ]; then
+      echo "error: $BRIEF records a Sparse checkout line but the spawn has no --sparse; pass the brief's directories with --sparse or re-scaffold the brief without one" >&2
+      exit 1
+    fi
+  fi
   # Use the existing launch-brief overlay for every worker kind, including
   # pre-scope briefs and relaunches. Charters never enter this worker path.
   SOURCE_BRIEF=$BRIEF
@@ -4622,6 +4730,18 @@ validate_spawn_worktree() { # <source> <inspect-target>
     echo "error: $source did not yield an isolated worktree (resolved '$WT'; worktree root '${SPAWN_WT_TOP:-none}'; spawning project '$PROJ_ABS'); refusing to launch to avoid tangling the primary checkout. Inspect target $inspect_target" >&2
     exit 1
   fi
+}
+
+# Create the task's sparse copy (header: --sparse) and adopt it as $WT. The
+# abort cleanup owns it from the moment it exists, and the same isolation
+# screen as every other copy runs before anything is launched in it.
+spawn_create_sparse_copy() {
+  WT=$(fm_sparse_copy_create "$PROJ_ABS" "$ID" "$SPARSE") || {
+    echo "error: could not create the sparse copy of $PROJ_ABS for $ID (directories $SPARSE)" >&2
+    exit 1
+  }
+  SPARSE_ABORT_CLEANUP=1
+  validate_spawn_worktree "sparse copy" "$WT"
 }
 
 # A pooled slot whose only deviation is a submodule gitlink is stale, not dirty:
@@ -5308,19 +5428,32 @@ EOF
     T="$HC_SES:$HC_TERMINAL"
     ;;
   orca)
-    set +e
-    ORCA_WT_RAW=$(fm_backend_orca_worktree_create "$PROJ_ABS" "$W")
-    ORCA_WT_STATUS=$?
-    set -e
-    if [ "$ORCA_WT_STATUS" -ne 0 ]; then
-      if [ "$ORCA_WT_STATUS" -eq 2 ] && [ -n "$ORCA_WT_RAW" ]; then
-        if parse_orca_worktree_result "$ORCA_WT_RAW" && [ -n "$ORCA_WORKTREE_ID" ]; then
-          ORCA_ABORT_CLEANUP=1
-        fi
+    if [ -n "$SPARSE" ]; then
+      # Firstmate made this copy (header: --sparse); Orca only opens the terminal.
+      spawn_create_sparse_copy
+      SPARSE_WT=$WT
+      ORCA_WT_RAW=$(fm_backend_orca_worktree_adopt "$PROJ_ABS" "$SPARSE_WT") || exit 1
+      parse_orca_worktree_result "$ORCA_WT_RAW" || true
+      if [ "$(real_path_or_raw "${WT:-}")" != "$(real_path_or_raw "$SPARSE_WT")" ]; then
+        echo "error: orca resolved the sparse copy $SPARSE_WT as '${WT:-}'; refusing to launch in a copy firstmate did not create" >&2
+        WT=$SPARSE_WT
+        exit 1
       fi
-      exit 1
+    else
+      set +e
+      ORCA_WT_RAW=$(fm_backend_orca_worktree_create "$PROJ_ABS" "$W")
+      ORCA_WT_STATUS=$?
+      set -e
+      if [ "$ORCA_WT_STATUS" -ne 0 ]; then
+        if [ "$ORCA_WT_STATUS" -eq 2 ] && [ -n "$ORCA_WT_RAW" ]; then
+          if parse_orca_worktree_result "$ORCA_WT_RAW" && [ -n "$ORCA_WORKTREE_ID" ]; then
+            ORCA_ABORT_CLEANUP=1
+          fi
+        fi
+        exit 1
+      fi
+      parse_orca_worktree_result "$ORCA_WT_RAW" || true
     fi
-    parse_orca_worktree_result "$ORCA_WT_RAW" || true
     ORCA_ABORT_CLEANUP=1
     if [ -z "$ORCA_WORKTREE_ID" ] || [ -z "$WT" ]; then
       echo "error: orca did not return a worktree id/path for $W" >&2
@@ -6033,6 +6166,10 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   # A t3code slot was leased and validated in its target branch above.
   if [ "$BACKEND" = t3code ]; then
     :
+  elif [ -n "$SPARSE" ]; then
+    # A sparse copy replaces the pool slot (header: --sparse); the recorded-copy
+    # handoff below moves the window's shell into it.
+    spawn_create_sparse_copy
   elif [ "$BACKEND" = herdr ]; then
     spawn_lease_herdr_slot
   else
@@ -7236,7 +7373,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness hermes_profile hermes_home kind mode yolo branch tasktmp base_branch upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id tern_session_id tern_tab_id tern_block_id hc_session hc_terminal home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
+      split("window endpoint_task_id worktree project harness hermes_profile hermes_home kind mode yolo branch tasktmp base_branch sparse upstream_consent forge backup_remote backup_prefix model effort opencode_version account account_provider omp_profile busy_gen spawn_gen approval_mode traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id paseo_terminal_id paseo_workspace_id rex_server rex_session_id rex_window_id rex_block_id t3_thread_id t3_project_id tern_session_id tern_tab_id tern_block_id hc_session hc_terminal home projects control_relaunch_tx polytoken_session polytoken_port polytoken_credential", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -7260,6 +7397,7 @@ preserve_relaunch_meta() {
   [ -z "${BRANCH:-}" ] || echo "branch=$BRANCH"
   echo "tasktmp=$TASK_TMP"
   [ -z "$BASE_BRANCH" ] || echo "base_branch=$BASE_BRANCH"
+  [ -z "$SPARSE" ] || echo "sparse=$SPARSE"
   [ -z "$UPSTREAM_CONSENT" ] || echo "upstream_consent=$UPSTREAM_CONSENT"
   # Read by bin/fm-dod-lib.sh's ready-report gate; absent on every other forge.
   [ "$EXTERNAL_REVIEW" = 0 ] || echo "forge=external"
@@ -7436,6 +7574,7 @@ if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
 fi
 "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
+SPARSE_ABORT_CLEANUP=0
 
 sq_brief=$(shell_quote "$BRIEF")
 sq_turnend=$(shell_quote "$TURNEND")

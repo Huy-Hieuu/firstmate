@@ -176,10 +176,53 @@ fm_backend_orca_repo_ensure() {  # <project-path>
   printf '%s' "$repo_id"
 }
 
+# Print a failed Orca call's `<code>: <message>` from its JSON error, or its raw
+# output when that is not an Orca error object.
+fm_backend_orca_error_detail() {  # <output>
+  printf '%s' "$1" | node -e '
+const fs = require("fs");
+const input = fs.readFileSync(0, "utf8").trim();
+let detail = input;
+try {
+  const e = JSON.parse(input).error;
+  if (e && (e.code || e.message)) detail = [e.code, e.message].filter(Boolean).join(": ");
+} catch (err) {}
+process.stdout.write(detail || "no output");
+' 2>/dev/null || printf '%s' "${1:-no output}"
+}
+
+# A failed `orca worktree create` can still leave the copy it was making: Orca
+# finishes creating it after reporting the error. Poll the task's worktree name
+# for a bounded time and remove a copy that turns up only while it is not the
+# project and holds no change; otherwise name the removal command.
+fm_backend_orca_create_leftover_remove() {  # <project-path> <name>
+  local project=$1 name=$2 out wt_id wt_path i project_real
+  project_real=$(CDPATH='' cd -- "$project" 2>/dev/null && pwd -P) || project_real=$project
+  for i in $(seq 1 15); do
+    [ "$i" -eq 1 ] || sleep 3
+    out=$(orca worktree show --worktree "name:$name" --json 2>/dev/null) || continue
+    wt_id=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id 2>/dev/null) || continue
+    wt_path=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-path 2>/dev/null) || continue
+    if [ "$(CDPATH='' cd -- "$wt_path" 2>/dev/null && pwd -P)" != "$project_real" ] &&
+      [ -z "$(git -C "$wt_path" status --porcelain --untracked-files=all 2>/dev/null || echo dirty)" ] &&
+      fm_backend_orca_remove_worktree "$wt_id" >/dev/null 2>&1; then
+      echo "note: removed the copy $wt_path that the failed orca worktree create left for $name" >&2
+      return 0
+    fi
+    break
+  done
+  echo "warning: if the failed orca worktree create left a copy for $name, inspect it and run 'orca worktree rm --worktree name:$name --force'" >&2
+}
+
 fm_backend_orca_worktree_create() {  # <project-path> <name>
-  local project=$1 name=$2 repo_id out wt_id wt_path terminal
+  local project=$1 name=$2 repo_id out wt_id wt_path terminal rc=0
   repo_id=$(fm_backend_orca_repo_ensure "$project") || return 1
-  out=$(orca worktree create --repo "id:$repo_id" --name "$name" --no-parent --setup skip --json) || return 1
+  out=$(orca worktree create --repo "id:$repo_id" --name "$name" --no-parent --setup skip --json) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "error: orca worktree create failed for $name (exit $rc): $(fm_backend_orca_error_detail "$out")" >&2
+    fm_backend_orca_create_leftover_remove "$project" "$name"
+    return 1
+  fi
   wt_id=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id) || {
     echo "error: orca worktree create did not return a worktree id for $name" >&2
     return 1
@@ -200,6 +243,26 @@ fm_backend_orca_worktree_create() {  # <project-path> <name>
   }
   printf '%s\t%s' "$wt_id" "$wt_path"
   [ -z "$terminal" ] || printf '\t%s' "$terminal"
+}
+
+# Resolve a worktree firstmate created itself (a sparse task copy) instead of
+# asking Orca to create one: Orca lists every linked worktree of a repository it
+# knows, so the project is registered first and the copy is then looked up by
+# path, briefly retried while Orca notices it. Prints `<worktree-id>\t<path>`,
+# the shape fm_backend_orca_worktree_create prints.
+fm_backend_orca_worktree_adopt() {  # <project-path> <worktree-path>
+  local project=$1 path=$2 out wt_id wt_path i
+  fm_backend_orca_repo_ensure "$project" >/dev/null || return 1
+  for i in $(seq 1 10); do
+    [ "$i" -eq 1 ] || sleep 1
+    out=$(orca worktree show --worktree "path:$path" --json 2>/dev/null) || continue
+    wt_id=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id 2>/dev/null) || continue
+    wt_path=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-path 2>/dev/null) || continue
+    printf '%s\t%s' "$wt_id" "$wt_path"
+    return 0
+  done
+  echo "error: orca worktree show did not resolve the worktree at $path: $(fm_backend_orca_error_detail "${out:-}")" >&2
+  return 1
 }
 
 fm_backend_orca_terminal_create() {  # <worktree-id> <title>

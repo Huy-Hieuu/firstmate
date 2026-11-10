@@ -911,6 +911,97 @@ test_local_only_merged_to_local_main_allows() {
   pass "local-only worktree with work merged into local main is torn down (no regression)"
 }
 
+# Replace the case's task copy with a sparse copy at the layout bin/fm-spawn.sh
+# --sparse creates (<project-parent>/.fm-sparse/<task-id>/<project-name>), on
+# the same task branch, and record it as the task's sparse worktree.
+# Args: case_dir mode kind. Echoes the sparse copy path.
+make_sparse_task_copy() {
+  local case_dir=$1 mode=$2 kind=$3 sparse
+  sparse="$case_dir/.fm-sparse/task-x1/project"
+  git -C "$case_dir/project" worktree remove --force "$case_dir/wt"
+  mkdir -p "$(dirname "$sparse")"
+  git -C "$case_dir/project" worktree add -q --no-checkout "$sparse" fm/task-x1
+  printf 'tools\nalexis\n' | git -C "$sparse" sparse-checkout set --cone --stdin
+  git -C "$sparse" reset -q --hard
+  write_meta "$case_dir" "$mode" "$kind" "$sparse"
+  printf '%s\n' 'sparse=alexis,tools' >> "$case_dir/state/task-x1.meta"
+  printf '%s\n' "$sparse"
+}
+
+test_sparse_copy_with_unlanded_work_is_refused_and_kept() {
+  local case_dir sparse rc
+  case_dir=$(make_case sparse-unlanded)
+  sparse=$(make_sparse_task_copy "$case_dir" local-only ship)
+  git -C "$sparse" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "unlanded sparse work"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "sparse-unlanded: teardown should refuse unlanded work in a sparse copy"
+  grep -q REFUSED "$case_dir/stderr" || fail "sparse-unlanded: no REFUSED line in stderr"
+  [ -d "$sparse" ] || fail "sparse-unlanded: the refused teardown removed the sparse copy"
+  [ -f "$case_dir/state/task-x1.meta" ] || fail "sparse-unlanded: the refused teardown removed the task record"
+  pass "a sparse copy holding unlanded work is refused and kept"
+}
+
+test_sparse_copy_with_landed_work_is_removed() {
+  local case_dir sparse rc
+  case_dir=$(make_case sparse-landed)
+  sparse=$(make_sparse_task_copy "$case_dir" local-only ship)
+  git -C "$sparse" -c user.email=t@t -c user.name=t commit -q --allow-empty -m "landed sparse work"
+  git -C "$case_dir/project" update-ref refs/heads/main "$(git -C "$sparse" rev-parse HEAD)"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "sparse-landed: teardown should remove a sparse copy whose work landed"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$sparse" "sparse-landed: the sparse copy survived teardown"
+  assert_absent "$case_dir/.fm-sparse/task-x1" "sparse-landed: the per-task container survived teardown"
+  ! git -C "$case_dir/project" worktree list --porcelain | grep -qF "$sparse" \
+    || fail "sparse-landed: the project still lists the removed sparse copy"
+  pass "a sparse copy whose work landed is removed with its per-task container"
+}
+
+test_sparse_scout_copy_is_removed() {
+  local case_dir sparse rc
+  case_dir=$(make_case sparse-scout)
+  sparse=$(make_sparse_task_copy "$case_dir" no-mistakes scout)
+  prepare_scout_teardown "$case_dir"
+  printf 'scratch\n' > "$sparse/tools-scratch.txt"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "sparse-scout: teardown should discard a scout's sparse copy"$'\n'"$(cat "$case_dir/stderr")"
+  assert_absent "$case_dir/.fm-sparse/task-x1" "sparse-scout: the scout's sparse copy survived teardown"
+  pass "a scout's sparse copy is discarded with its per-task container"
+}
+
+test_sparse_record_outside_its_layout_is_refused() {
+  local case_dir rc
+  case_dir=$(make_case sparse-foreign)
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' 'sparse=alexis,tools' >> "$case_dir/state/task-x1.meta"
+  wt_commit "$case_dir" "landed work"
+  git -C "$case_dir/project" update-ref refs/heads/main "$(git -C "$case_dir/wt" rev-parse HEAD)"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "sparse-foreign: teardown should refuse a sparse record whose worktree is not its own copy"
+  assert_contains "$(cat "$case_dir/stderr")" "is not the copy" "sparse-foreign: the refusal did not name the layout mismatch"
+  [ -d "$case_dir/wt" ] || fail "sparse-foreign: teardown removed a worktree outside the sparse layout"
+  pass "a sparse record pointing outside its copy layout removes nothing"
+}
+
 # Send the task branch's commits to <target> on origin from a separate clone, so
 # the task copy's tracking refs do not show them. Args: case_dir target
 land_task_commits_from_other_clone() {
@@ -6455,6 +6546,10 @@ test_teardown_closes_a_gitlab_task_with_its_merge_request_url_as_a_note
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_sparse_copy_with_unlanded_work_is_refused_and_kept
+test_sparse_copy_with_landed_work_is_removed
+test_sparse_scout_copy_is_removed
+test_sparse_record_outside_its_layout_is_refused
 test_landed_on_other_origin_branch_with_stale_refs_allows
 test_refresh_failure_does_not_read_as_landed
 test_refreshed_refs_still_refuse_unreachable_commits

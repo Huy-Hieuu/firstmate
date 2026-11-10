@@ -1464,6 +1464,48 @@ test_base_branch_is_rendered_and_bounded() {
   pass "fm-brief.sh: --base-branch records the base, targets the PR at it, and is refused where no PR carries it"
 }
 
+# --sparse names a task's own directories in a sparse-registered project. It is
+# recorded in one normalized Sparse checkout line under # Setup, which fm-spawn
+# reads back, with the worker's instructions for the sparse copy.
+test_sparse_is_rendered_and_bounded() {
+  local home out rc brief id
+  home="$TMP_ROOT/sparse-home"
+  mkdir -p "$home/data"
+  # shellcheck source=bin/fm-dod-lib.sh
+  . "$ROOT/bin/fm-dod-lib.sh"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sparse-s1 some-proj --mode direct-PR --sparse alexis/ --sparse plutus,alexis >/dev/null 2>&1 \
+    || fail "direct-PR --sparse should scaffold"
+  brief="$home/data/brief-sparse-s1/brief.md"
+  [ "$(fm_brief_sparse_paths "$brief")" = alexis,plutus ] \
+    || fail "the brief recorded sparse directories '$(fm_brief_sparse_paths "$brief")', not alexis,plutus"
+  # shellcheck disable=SC2016  # literal backticks in rendered prose must stay unexpanded
+  assert_grep 'run `git sparse-checkout add <dir>` in this copy' "$brief" \
+    "the brief does not tell the worker how to add a directory"
+  # shellcheck disable=SC2016
+  assert_grep '`git sparse-checkout list` prints every directory present' "$brief" \
+    "the brief does not tell the worker which paths are present"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sparse-scout-s2 some-proj --scout --sparse=alexis >/dev/null 2>&1 \
+    || fail "scout --sparse should scaffold"
+  [ "$(fm_brief_sparse_paths "$home/data/brief-sparse-scout-s2/brief.md")" = alexis ] \
+    || fail "the scout brief did not record its sparse directory"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-sparse-none-s3 some-proj --mode direct-PR >/dev/null 2>&1
+  ! fm_brief_sparse_paths "$home/data/brief-sparse-none-s3/brief.md" >/dev/null \
+    || fail "a brief without --sparse recorded a Sparse checkout line"
+
+  for id in brief-sparse-bad-s4:../etc brief-sparse-empty-s5: brief-sparse-space-s6:'a b'; do
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "${id%%:*}" some-proj --mode direct-PR --sparse "${id#*:}" 2>&1); rc=$?
+    [ "$rc" -ne 0 ] || fail "--sparse '${id#*:}' should be refused"
+    [ ! -e "$home/data/${id%%:*}/brief.md" ] || fail "a refused --sparse scaffold wrote ${id%%:*}"
+  done
+  out=$(FM_HOME="$home" FM_SECONDMATE_CHARTER=charter "$ROOT/bin/fm-brief.sh" brief-sparse-sm-s7 --secondmate --no-projects --sparse alexis 2>&1); rc=$?
+  [ "$rc" -ne 0 ] || fail "a secondmate charter should refuse --sparse"
+  assert_contains "$out" "only to ship and scout briefs" "the secondmate --sparse refusal did not explain itself"
+  pass "fm-brief.sh: --sparse records one normalized Sparse checkout line with worker guidance and refuses bad directories and charters"
+}
+
 # (a) An unregistered/default project - no --branch-prefix passed at all - must
 # keep every generated ship mode's branch on the legacy "fm/<task-id>" name, byte
 # for byte, so every existing firstmate installation is unaffected.
@@ -1725,6 +1767,7 @@ test_wait_no_turns_absent_keeps_the_previous_brief
 test_inbox_guidance_explains_marked_body_terminator
 test_home_brief_include_is_appended_last
 test_base_branch_is_rendered_and_bounded
+test_sparse_is_rendered_and_bounded
 test_ship_branch_prefix_defaults_to_legacy_fm
 test_ship_branch_prefix_override_is_consistent_across_modes
 test_ship_branch_prefix_empty_override_yields_bare_task_id
