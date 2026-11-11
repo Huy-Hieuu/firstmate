@@ -9,9 +9,9 @@
 # is additionally serialized by the existing state/.spawn-<task>.lock and the
 # shared named-session Herdr presentation lock, in that order.
 #
-# A visible title is discovery only. Cleanup requires the exact current
-# "└ <concise-task> · p:<22-char-token>" grammar, at depth 0 or indented one
-# tree level as a secondmate home's child is, one token occurrence across
+# A visible title is discovery only. Cleanup requires the exact
+# "└ <body> · p:<22-char-token>" grammar, at tree depth 0, 1, or 2,
+# one token occurrence across
 # the named-session snapshot, exactly one matching home-local journal, one tab,
 # one pane, absent task metadata, no registered agent, and a process proof that
 # the pane contains only one idle recognized shell with no child process. A
@@ -43,6 +43,7 @@ fm_herdr_cleanup_warn() {
 
 fm_herdr_cleanup_title_token() { # <workspace-title>
   local title=$1 prefix token rest
+  title=${title#"$FM_BACKEND_HERDR_TREE_INDENT"}
   title=${title#"$FM_BACKEND_HERDR_TREE_INDENT"}
   case "$title" in
     '└ '*' · p:'*) ;;

@@ -778,11 +778,16 @@ fm_backend_herdr_projection_concise_task_label() {  # <task-id>
   printf '%s' "$task"
 }
 
+# FM_BACKEND_HERDR_TREE_INDENT: the one indent unit of the hierarchy tree.
+# Two ASCII spaces: Herdr keeps leading spaces in workspace labels verbatim.
+FM_BACKEND_HERDR_TREE_INDENT='  '
+
 # FM_BACKEND_HERDR_TREE_JQ_DEFS: the one jq vocabulary for the hierarchy tree,
 # prepended to every workspace-list program that classifies labels. A home
 # label matches bare (firstmate, 2ndmate-<id>) or, for a secondmate, in its
 # `└ 2ndmate-<id>` tree form; a projected child is `└ … · p:<token>` at depth
-# 0 or indented one level; legacy owner/... children stay read-only.
+# 0, 1, or 2 (older workspaces keep the depth they were created at); legacy
+# owner/... children stay read-only.
 # shellcheck disable=SC2016  # jq source: its $vars are jq's, never the shell's
 FM_BACKEND_HERDR_TREE_JQ_DEFS='
     def home_label_is($home):
@@ -798,7 +803,7 @@ FM_BACKEND_HERDR_TREE_JQ_DEFS='
     def top_level_owner: .label | ltrimstr("└ ");
     def is_new_child:
       (.label | type) == "string"
-      and (.label | test("^(  )?└ .+ · p:[A-Za-z0-9_-]{22}$"));
+      and (.label | test("^('"$FM_BACKEND_HERDR_TREE_INDENT"'){0,2}└ .+ · p:[A-Za-z0-9_-]{22}$"));
     def is_legacy_child:
       (.label | type) == "string"
       and (.label | test("^(firstmate|2ndmate-[^/]+)/.+ · p:[A-Za-z0-9_-]{22}$"));
@@ -809,28 +814,41 @@ FM_BACKEND_HERDR_TREE_JQ_DEFS='
 '
 
 # fm_backend_herdr_projection_workspace_label: presentation-only child label.
-# Format is literal U+2514 BOX DRAWINGS LIGHT UP AND RIGHT, one space, the
-# concise task label, then the unchanged · p:<full-22-char-token> suffix. A
-# child launched from a secondmate home (FM_HOME) is one tree level deeper, so
-# its label starts with FM_BACKEND_HERDR_TREE_INDENT (two spaces).
-# Labels and tokens remain non-authoritative correlators only.
-FM_BACKEND_HERDR_TREE_INDENT='  '
-fm_backend_herdr_projection_workspace_label() {  # <task-id> <projection-id>
-  local indent=
+# Format is the tree indent, literal U+2514 BOX DRAWINGS LIGHT UP AND RIGHT,
+# one space, `<project> · <task-short>`, then the unchanged
+# · p:<full-22-char-token> suffix. <task-short> is the concise task label with
+# a leading `<project>-` removed. A child of the primary home is one indent
+# unit deep and a child of a secondmate home (FM_HOME) two, so each reads as
+# nested under `firstmate` or `└ 2ndmate-<id>`. The token suffix stays because
+# token lookups and startup cleanup discover a workspace by it when no task
+# metadata survives. Labels and tokens remain non-authoritative correlators.
+fm_backend_herdr_projection_workspace_label() {  # <task-id> <projection-id> <project>
+  local indent=$FM_BACKEND_HERDR_TREE_INDENT task
   case "$(fm_backend_herdr_workspace_label)" in
-    2ndmate-*) indent=$FM_BACKEND_HERDR_TREE_INDENT ;;
+    2ndmate-*) indent=$indent$FM_BACKEND_HERDR_TREE_INDENT ;;
   esac
-  printf '%s└ %s · p:%s' "$indent" "$(fm_backend_herdr_projection_concise_task_label "$1")" "$2"
+  task=$(fm_backend_herdr_projection_concise_task_label "$1")
+  printf '%s└ %s · %s · p:%s' "$indent" "$3" "${task#"$3"-}" "$2"
 }
 
-# fm_backend_herdr_projection_workspace_label_matches: whether <label> is the
-# child label derived for <task-id> and <projection-id> at either tree depth.
-# Depth is presentation only, so a journal written before or after a home
-# gained the indent validates the same way from any FM_HOME.
+# fm_backend_herdr_projection_workspace_label_matches: whether <label> is a
+# child label derived for <task-id> and <projection-id> at tree depth 0, 1,
+# or 2, with either the current `<project> · <task-short>` body or the older
+# bare concise-task body. Depth and project are presentation only, so a
+# journal written under any earlier form validates the same way from any
+# FM_HOME; the project is read back from the label, not re-derived.
 fm_backend_herdr_projection_workspace_label_matches() {  # <label> <task-id> <projection-id>
-  local base
-  base="└ $(fm_backend_herdr_projection_concise_task_label "$2") · p:$3"
-  [ "$1" = "$base" ] || [ "$1" = "$FM_BACKEND_HERDR_TREE_INDENT$base" ]
+  local body=$1 task project
+  body=${body#"$FM_BACKEND_HERDR_TREE_INDENT"}
+  body=${body#"$FM_BACKEND_HERDR_TREE_INDENT"}
+  case "$body" in '└ '*" · p:$3") ;; *) return 1 ;; esac
+  body=${body#'└ '}
+  body=${body%" · p:$3"}
+  task=$(fm_backend_herdr_projection_concise_task_label "$2")
+  [ "$body" = "$task" ] && return 0
+  project=${body%%' · '*}
+  [ -n "$project" ] && [ "$project" != "$body" ] \
+    && [ "$body" = "$project · ${task#"$project"-}" ]
 }
 
 # fm_backend_herdr_presentation_session_lock_path: one account-private lock
