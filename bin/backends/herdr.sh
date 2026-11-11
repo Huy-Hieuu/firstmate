@@ -815,35 +815,33 @@ FM_BACKEND_HERDR_TREE_JQ_DEFS='
 
 # fm_backend_herdr_projection_workspace_label: presentation-only child label.
 # Format is the tree indent, literal U+2514 BOX DRAWINGS LIGHT UP AND RIGHT,
-# one space, `<project> · <task-short>`, then the unchanged
-# · p:<full-22-char-token> suffix. <task-short> is the concise task label with
-# a leading `<project>-` removed. A child of the primary home is one indent
-# unit deep and a child of a secondmate home (FM_HOME) two, so each reads as
-# nested under `firstmate` or `└ 2ndmate-<id>`. A secondmate home's child also
-# names its owner, `<id>: <project> · <task-short>`, because the tree is drawn
-# only from workspace order: a mate workspace recreated by a restart lands
-# elsewhere while its live workers stay put under whichever mate now sits
-# above them, and Herdr 0.9.5 has no ordering or grouping by owner. The token
-# suffix stays because token lookups and startup cleanup discover a workspace
-# by it when no task metadata survives. Labels and tokens remain
-# non-authoritative correlators.
+# one space, a body, then the unchanged · p:<full-22-char-token> suffix. A
+# child of the primary home is one indent unit deep with body
+# `<project> · <task-short>`, where <task-short> is the concise task label
+# with a leading `<project>-` removed. A child of a secondmate home (FM_HOME)
+# is two units deep with the bare concise task label as its body, since it
+# already sits under its own `└ 2ndmate-<id>`. The token suffix stays because
+# token lookups and startup cleanup discover a workspace by it when no task
+# metadata survives. Labels and tokens remain non-authoritative correlators.
 fm_backend_herdr_projection_workspace_label() {  # <task-id> <projection-id> <project>
-  local indent=$FM_BACKEND_HERDR_TREE_INDENT owner='' home task
-  home=$(fm_backend_herdr_workspace_label)
-  case "$home" in
-    2ndmate-*) indent=$indent$FM_BACKEND_HERDR_TREE_INDENT; owner="${home#2ndmate-}: " ;;
-  esac
+  local task
   task=$(fm_backend_herdr_projection_concise_task_label "$1")
-  printf '%s└ %s%s · %s · p:%s' "$indent" "$owner" "$3" "${task#"$3"-}" "$2"
+  case "$(fm_backend_herdr_workspace_label)" in
+    2ndmate-*)
+      printf '%s%s└ %s · p:%s' "$FM_BACKEND_HERDR_TREE_INDENT" "$FM_BACKEND_HERDR_TREE_INDENT" "$task" "$2"
+      return
+      ;;
+  esac
+  printf '%s└ %s · %s · p:%s' "$FM_BACKEND_HERDR_TREE_INDENT" "$3" "${task#"$3"-}" "$2"
 }
 
 # fm_backend_herdr_projection_workspace_label_matches: whether <label> is a
 # child label derived for <task-id> and <projection-id> at tree depth 0, 1,
-# or 2, with the current `<project> · <task-short>` body, that body behind a
-# secondmate `<id>: ` owner, or the older bare concise-task body. Depth,
-# owner, and project are presentation only, so a journal written under any
-# earlier form validates the same way from any FM_HOME; owner and project are
-# read back from the label, not re-derived.
+# or 2, with the bare concise-task body, the `<project> · <task-short>` body,
+# or that body behind a secondmate `<id>: ` owner (written by an earlier
+# release). Depth, owner, and project are presentation only, so a journal
+# written under any form validates the same way from any FM_HOME; owner and
+# project are read back from the label, not re-derived.
 fm_backend_herdr_projection_workspace_label_matches() {  # <label> <task-id> <projection-id>
   local body=$1 task
   body=${body#"$FM_BACKEND_HERDR_TREE_INDENT"}
