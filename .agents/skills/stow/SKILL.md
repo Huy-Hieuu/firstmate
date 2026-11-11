@@ -2,7 +2,7 @@
 name: stow
 description: >-
   Sweep the session for uncaptured durable knowledge and unfiled or wrong open work records, and curate startup memory.
-  Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, or periodically to keep operational memory current.
+  Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, periodically to keep operational memory current, or when the captain asks firstmate to forget something.
 user-invocable: true
 metadata:
   internal: true
@@ -60,6 +60,28 @@ Marking rules:
 
 Decay advances only when a pass runs, so a home stowed less often than a clock experiences that clock at its stow interval.
 
+### Expiry, strike-through, and forget
+
+Three more spellings let a fact leave startup memory without waiting for a pass:
+
+- `<!--u:YYYY-MM-DD-->` - `until`: the entry holds through that date and is expired from the next day, whatever its tier, including a `pinned` entry, because the end date is part of the stated fact.
+  It is the checkable expiry condition a `perishable` entry needs, and it may follow any tier marker, such as `- MoMo release freeze. <!--p:2026-11-11--><!--u:2026-12-15-->`.
+- `- ~~text~~` - struck: an entry whose text starts with `~~` is superseded; write its replacement as a separate entry instead of editing the old one in place when the change is worth seeing until the next pass.
+- A forgotten term: the captain's "forget X" records X in `data/memory/forgotten.txt`, and any entry mentioning X as a whole word, case-insensitively, is forgotten until the captain states X again.
+
+An entry is a top-level list line plus its indented continuation lines; headings and undated lines without these spellings are never touched.
+`bin/fm-memory.sh` is the one applier: its header owns matching and file formats, its `view` is how the session-start digest prints the memory files, so expired, struck, and forgotten entries are hidden from the next session at once, and its `due` lists them for the pass below.
+
+When the captain asks to forget something:
+
+1. Run `bin/fm-memory.sh forget "<term>"`; it records the term and lists every entry that mentions it in the memory files and `data/memory-archive.md`.
+2. Remove each listed mention from every editable file, archive included: delete an entry that is only about the term and rewrite one that mentions it in passing.
+   This is the one curation step that deletes rather than archives, because the captain asked for the fact to be gone; git history still holds old commits and is not rewritten.
+   A read-only `data/captain-shared.md` match is routed to the primary owner, and a declared memory tier holding the fact gets the same request under its own rule.
+3. Journal the change with `bin/fm-memory.sh commit "forget <term>"`.
+
+When the captain later states a forgotten fact again, run `bin/fm-memory.sh unforget "<term>"` before capturing it.
+
 ### Optional pass horizon (config/stow-pass-horizon)
 
 The wall-clock horizons above are this skill's default contract, and a home gets exactly them unless it asks for more.
@@ -113,6 +135,7 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    Re-confirm a stale `perishable` entry against its named condition: still open means refresh the date, while resolved, expired, or no longer checkable means archive it in this pass.
    Promote `perishable` to `aging` when its condition keeps proving durable past its expected life, and retier in place when a supersession changes an entry's lifetime.
    `pinned` is exempt from this automatic decay step entirely.
+   Then run `bin/fm-memory.sh due` and resolve every entry it lists in an editable file, whatever its tier: archive an expired entry with reason `expired <date>` unless the captain has extended it, archive a struck entry with reason `superseded`, and remove a forgotten mention under the forget procedure above.
 6. Consolidate every editable memory file as needed, not only the file apparently related to a new finding.
    Prefer one concise current rule or authoritative pointer over duplicate prose.
    Archive completed incident and release chronology, stale versions and paths, transient task state, resolved alternatives, old metrics, and report-sized procedures; merge or remove only superseded claims and duplicates whose facts are preserved elsewhere.
@@ -134,6 +157,9 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    In that last-resort case, create one captain-held decision that names the shortfall and each relevant pinned entry, with exactly these options: raise the effective budget, or explicitly approve offloading or trimming a named pinned entry.
    Route a read-only ownership constraint to its primary owner, and make every other unresolved excess a concrete captain decision that names the safe action still required.
    Never end a pass over budget as an accepted exception.
+9. Journal the pass with `bin/fm-memory.sh commit "stow <YYYY-MM-DD>"`, which commits only the memory files, the cold archive, and `data/memory/` as one commit in the home's own `data/` git repository and never pushes.
+   Any other deliberate memory edit outside a pass is journaled the same way with a reason that names it; `git -C data revert <sha>` undoes one journaled change.
+   Where `data/` is not its own git repository the command reports that and changes nothing, which is not an exception.
 
 A net increase is allowed only for a genuinely new current fact with no stronger owner.
 Before allowing it, consolidate enough lower-priority material to remain within budget.
@@ -151,7 +177,7 @@ Archive provenance stays verbose rather than compact because the cold tier is ne
 - (from learnings.md, tier: perishable, reinforced: 2026-06-30) While state/.afk exists, the away-daemon owns triage... [archived: unreinforced 39d]
 ```
 
-Reasons include `unreinforced <N>d`, `unreinforced <N>p`, `budget oldest-first`, and `legacy-unvalidated`.
+Reasons include `unreinforced <N>d`, `unreinforced <N>p`, `budget oldest-first`, `legacy-unvalidated`, `expired <date>`, and `superseded`.
 Archiving is a move, not a removal, and recovery is `grep` plus copy back with no tooling.
 Each home keeps its own archive, the archive never cascades, and truncating a grown archive is a captain decision, not a mechanism.
 
@@ -223,6 +249,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
 1. **Sweep the session for uncaptured durable knowledge.**
    Look for operational learnings, captain preferences expressed in passing, project-intrinsic facts, standing decisions, and undone next steps.
    Include what workers reported from harnesses that cannot reach a declared tier, because this session is their only capture path.
+   Drop any finding for which `bin/fm-memory.sh check "<finding>"` names a forgotten term, unless the captain stated it again this session, which is the `unforget` case above.
 2. **Route each finding using AGENTS.md's knowledge-routing table.**
    AGENTS.md section 6 is the source of truth for destinations.
    Do not re-derive or duplicate that mapping here.
