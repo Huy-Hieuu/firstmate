@@ -121,7 +121,7 @@ The sidebar reads as a tree: `firstmate`, then its own workers, then each second
 firstmate
   └ shop · fix-login · p:<token>
 └ 2ndmate-web
-    └ web · audit · p:<token>
+    └ web: web · audit · p:<token>
 └ 2ndmate-data
 ```
 
@@ -129,10 +129,12 @@ firstmate
   The launcher's workspace is resolved from its own Herdr identity, or from the unique `firstmate` workspace when the launcher runs outside Herdr.
 - A projected worker's label is `└ <project> · <task-short> · p:<token>`, where `<project>` is the task's project directory name and `<task-short>` is the task id without a leading `<project>-`.
 - A worker started from the primary home is indented one level, and one started from a secondmate home two levels, so each reads as its parent's child; one level is two spaces, which Herdr keeps verbatim at the start of a workspace label.
+- A worker started from a secondmate home also names its owning mate, `└ <id>: <project> · <task-short> · p:<token>`, because the tree is drawn only from workspace order.
+  A restart, update, or crash respawn that recreates a mate's workspace places it anew while that mate's live workers stay where they were, under whichever mate is now listed above them, and Herdr 0.9.5 has no way to order or group workspaces by owner.
 - The `p:<token>` suffix stays because token lookups and [startup cleanup](#startup-cleanup-of-restored-projections) find a workspace by it when no task metadata survives.
 - Placement uses the same verified `workspace.move` path, presentation-order lock, and focus restore as [Ordering](#ordering), moves only the new mate workspace, and never fails the spawn: any unavailable, ambiguous, or failed step leaves the mate where Herdr created it with a warning.
 - An existing mate workspace is never moved or renamed, so a mate launched before this keeps its flat `2ndmate-<id>` label until its workspace is next recreated.
-- Labels and indentation stay presentation only; recorded ids remain the endpoint authority, and journals, recovery, and startup cleanup accept a worker label at depth 0, 1, or 2 and in the older `└ <task> · p:<token>` form, so a workspace created before is never renamed.
+- Labels and indentation stay presentation only; recorded ids remain the endpoint authority, and journals, recovery, and startup cleanup accept a worker label at depth 0, 1, or 2, with or without the owning `<id>: `, and in the older `└ <task> · p:<token>` form, so a workspace created before is never renamed and keeps reading by position until it is next recreated.
 
 The agents list names each agent's workspace in its first row once the [Sidebar rows](#sidebar-rows) are applied, so a mate and its workers read by name rather than only by group tokens.
 
