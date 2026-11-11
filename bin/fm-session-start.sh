@@ -62,7 +62,8 @@
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
 #   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
-#                       data/captain-shared.md, data/learnings.md: read-only,
+#                       data/captain-shared.md, data/learnings.md (the last
+#                       three through fm-memory.sh view): read-only,
 #                       always safe, always runs.
 #   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
@@ -408,20 +409,22 @@ SUBRULE='-----------------------------------------------------------------------
 section() { printf '\n%s\n%s\n%s\n' "$RULE" "$1" "$RULE"; }
 subsection() { printf '\n%s\n%s\n' "$1" "$SUBRULE"; }
 
-# print_file_or_absent <path> <label>: full contents under a labeled
+# print_file_or_absent <path> <label> [memory]: full contents under a labeled
 # subsection, or an explicit ABSENT marker. Absence is semantically
 # meaningful for every one of these files (captain.md absent = firstmate
 # repo built-in defaults, projects.md absent = rebuild from clones, etc. -
 # AGENTS.md section 3) and must never be confused with an empty-but-present
-# file, so the two cases print differently.
+# file, so the two cases print differently. A `memory` file prints through
+# fm-memory.sh view, which hides expired, struck, and forgotten entries; the
+# raw file prints if that view fails, so no memory is ever lost from the digest.
 print_file_or_absent() {
-  local path=$1 label=$2
+  local path=$1 label=$2 kind=${3:-}
   subsection "$label"
   if [ -f "$path" ]; then
-    if [ -s "$path" ]; then
-      cat "$path"
-    else
+    if [ ! -s "$path" ]; then
       printf '(present, empty)\n'
+    elif [ "$kind" != memory ] || ! FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-memory.sh" view "$path" 2>/dev/null; then
+      cat "$path"
     fi
   else
     printf 'ABSENT\n'
@@ -1054,9 +1057,9 @@ stage context
 section "CONTEXT"
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
-print_file_or_absent "$DATA/captain.md" "data/captain.md"
-print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
-print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+print_file_or_absent "$DATA/captain.md" "data/captain.md" memory
+print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)" memory
+print_file_or_absent "$DATA/learnings.md" "data/learnings.md" memory
 
 # --- 9. closing reminder -----------------------------------------------
 stage next-step

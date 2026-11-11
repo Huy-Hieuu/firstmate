@@ -1302,6 +1302,7 @@ Shared captain preferences that apply across secondmate domains live only in the
 
 Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest.
 The file is created lazily on first learning and follows the internal [`stow` skill's](../.agents/skills/stow/SKILL.md) aging-tier and cold-archive contract: inspect the current file first and curate it instead of appending forever.
+Entries in the memory files may carry an `until` expiry or a strike-through, and the captain's "forget" requests are recorded in `data/memory/forgotten.txt`; the session-start digest hides expired, struck, and forgotten entries, and the `stow` skill owns that grammar while `bin/fm-memory.sh` owns its matching, file format, and the `data/` git journal of memory changes.
 
 There is no shared learnings file by captain decision.
 
