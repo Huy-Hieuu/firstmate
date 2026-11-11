@@ -69,9 +69,11 @@
 #   fm_sparse_copy_path owns the layout), sets a cone-mode sparse checkout of the
 #   baseline plus these directories, fills it, then validates and freshens it to
 #   its base exactly like a pooled copy; the worker then makes its branch there
-#   as in any copy. backend=tmux opens its window on that copy; backend=orca
-#   resolves it with `orca worktree show --worktree path:<copy>` and opens only
-#   the terminal through Orca; every other backend is refused. The directories
+#   as in any copy. backend=tmux and backend=herdr open their endpoint on the
+#   project and then move its top-level shell into that copy (no Treehouse slot
+#   or lease is taken); backend=orca resolves it with
+#   `orca worktree show --worktree path:<copy>` and opens only the terminal
+#   through Orca; every other backend is refused. The directories
 #   must agree with the brief's Setup "Sparse checkout:" line
 #   (bin/fm-brief.sh --sparse) in both directions, a sparse-registered project
 #   refuses a spawn without them, and --sparse refuses a project with no
@@ -166,7 +168,8 @@
 #   every descendant process). An app-detected hc also records its signal in
 #   meta's backend_detect= line.
 #   Herdr leases its slot durably (treehouse get --lease) and moves the pane's
-#   top-level shell into it, because a restart restores that shell's cwd.
+#   top-level shell into it, because a restart restores that shell's cwd; a
+#   sparse task copy (--sparse) replaces that lease and takes the same move.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
 #   absent backend= means tmux. Orca, cmux, paseo, tern, and hc do not support
@@ -192,7 +195,12 @@
 #   session stops the spawn before any worker endpoint exists. A launcher
 #   outside herdr has no workspace to inherit and uses this home's own labeled
 #   workspace, which must then match exactly one. --secondmate is the deliberate
-#   exception: it stands up that secondmate home's own workspace.
+#   exception: it stands up that secondmate home's own workspace. A freshly
+#   created secondmate workspace is labeled `└ 2ndmate-<id>` and, best-effort
+#   under the presentation-order lock, moved once to sit after the launcher's
+#   own workspace and its child blocks
+#   (fm_backend_herdr_secondmate_order_best_effort); an adopted workspace is
+#   never moved or renamed, and an ordering failure never fails the spawn.
 #   Herdr additionally uses a presentation-only layout by default when the
 #   selected client and running server meet the Herdr 0.8.0 floor. The local
 #   config/herdr-presentation-spaces file can say off to disable it or on to
@@ -221,7 +229,9 @@
 #   there, and a secondmate spawn never projects. Unbounded
 #   blocking on a third-party session lock is never the default. The exact
 #   response-derived new workspace is inserted immediately after its owning
-#   parent (firstmate or 2ndmate-<id>) contiguous child block. Ordering never
+#   parent (firstmate or a secondmate workspace) contiguous child block; a
+#   secondmate home's child label is indented one level
+#   (fm_backend_herdr_projection_workspace_label). Ordering never
 #   authorizes lifecycle cleanup, and any unavailable, ambiguous, or failed
 #   move warns while the spawn continues.
 #   Every projected create, prune, and move captures and verifies the named
@@ -4470,9 +4480,9 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
         exit 1
       fi
       case "$BACKEND" in
-      tmux | orca) ;;
+      tmux | herdr | orca) ;;
       *)
-        echo "error: a sparse task copy runs on backend=tmux or backend=orca only; pass --backend tmux or --backend orca for $ID (backend=$BACKEND would allocate a full copy of $SPARSE_PROJECT)" >&2
+        echo "error: a sparse task copy runs on backend=tmux, backend=herdr, or backend=orca only; pass --backend tmux, --backend herdr, or --backend orca for $ID (backend=$BACKEND would allocate a full copy of $SPARSE_PROJECT)" >&2
         exit 1
         ;;
       esac
@@ -5390,6 +5400,9 @@ else
       fi
     fi
     if [ "$HERDR_PROJECTED" -ne 1 ]; then
+      # This process's own Herdr pane is the launcher identity; the new task
+      # pane id below reuses HERDR_PANE_ID, so keep the launcher's first.
+      HERDR_MATE_LAUNCHER_PANE_ID=${HERDR_PANE_ID:-}
       HERDR_CONTAINER_RAW=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_container_ensure "$PROJ_ABS" "$HERDR_LAUNCHER_RELATIONSHIP") || exit 1
       # fm_backend_herdr_container_ensure echoes "<session>:<workspace_id>\t<seeded_default_tab_id>"
       # (the second field empty when this call ADOPTED a pre-existing workspace
@@ -5405,6 +5418,30 @@ else
       read -r HERDR_TAB_ID HERDR_PANE_ID <<EOF
 $HERDR_TASK_IDS
 EOF
+      # Hierarchy tree (docs/herdr-backend.md): a secondmate workspace this
+      # spawn just CREATED moves once to sit under the launching firstmate's
+      # own workspace. An adopted workspace is never moved; every failure here
+      # only warns, because the mate is already safely running.
+      if [ "$KIND" = secondmate ] && [ -n "$HERDR_SEEDED_DEFAULT_TAB_ID" ]; then
+        set +e
+        HERDR_PANE_ID="$HERDR_MATE_LAUNCHER_PANE_ID" fm_backend_herdr_launcher_identity "$HERDR_SES" 2>/dev/null
+        HERDR_LAUNCHER_STATUS=$?
+        set -e
+        HERDR_MATE_PARENT_WORKSPACE_ID=
+        case "$HERDR_LAUNCHER_STATUS" in
+        0) HERDR_MATE_PARENT_WORKSPACE_ID=$FM_BACKEND_HERDR_LAUNCHER_WORKSPACE_ID ;;
+        2) HERDR_MATE_PARENT_WORKSPACE_ID=$(fm_backend_herdr_projection_parent_workspace_exact \
+          "$HERDR_SES" "$(fm_backend_herdr_workspace_label)" 2>/dev/null || true) ;;
+        esac
+        if [ -z "$HERDR_MATE_PARENT_WORKSPACE_ID" ]; then
+          echo "warning: herdr secondmate ordering could not resolve the launcher's exact workspace; leaving worker in Herdr's current order" >&2
+        elif spawn_herdr_presentation_order_lock_acquire "$HERDR_SES"; then
+          fm_backend_herdr_secondmate_order_best_effort "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_MATE_PARENT_WORKSPACE_ID"
+          spawn_herdr_presentation_order_lock_release
+        else
+          echo "warning: herdr secondmate ordering could not take the presentation-order lock; leaving worker in Herdr's current order" >&2
+        fi
+      fi
     fi
     if [ -z "$HERDR_TAB_ID" ] || [ -z "$HERDR_PANE_ID" ]; then
       echo "error: herdr did not return a tab/pane id for $W" >&2

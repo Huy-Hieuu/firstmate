@@ -161,6 +161,37 @@ test_fresh_spawn_leases_and_moves_the_top_level_shell() {
   pass "a fresh herdr spawn leases the copy and moves the pane's top-level shell into it"
 }
 
+# A sparse-registered project takes no lease: the task gets the sparse copy
+# firstmate creates itself, and the pane's top-level shell moves into that copy
+# exactly as it would into a leased one.
+test_sparse_spawn_moves_the_top_level_shell_into_its_copy() {
+  local id=lease-sparse dir out status copy
+  dir=$(make_lease_case "$id")
+  mkdir -p "$dir/project/tools" "$dir/project/alexis" "$dir/project/janus"
+  printf 'x\n' | tee "$dir/project/tools/f" "$dir/project/alexis/f" > "$dir/project/janus/f"
+  git -C "$dir/project" add -A
+  git -C "$dir/project" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm dirs
+  git clone --quiet --bare "$dir/project" "$dir/origin.git"
+  git -C "$dir/project" remote add origin "file://$dir/origin.git"
+  git -C "$dir/project" fetch --quiet origin
+  printf '%s\n' '## Projects' "- project [no-mistakes sparse=tools] - sparse herdr project (added 2026-01-01)" \
+    > "$dir/home/data/projects.md"
+  printf '\n# Setup\nSparse checkout: alexis\n' >> "$dir/home/data/$id/brief.md"
+  copy="$dir/.fm-sparse/$id/project"
+  out=$(run_lease_spawn "$dir" "$id" --sparse alexis)
+  status=$?
+  expect_code 0 "$status" "a sparse herdr spawn should succeed"$'\n'"$out"
+  ! grep -q 'get --lease' "$dir/fake/treehouse-log" \
+    || fail "a sparse herdr task leased a pooled copy instead of using its sparse copy"
+  assert_grep "worktree=$copy" "$dir/home/state/$id.meta" "meta did not record the sparse copy"
+  assert_grep "sparse=alexis,tools" "$dir/home/state/$id.meta" "meta did not record the effective directory set"
+  [ "$(cat "$dir/fake/cwd")" = "$copy" ] \
+    || fail "the pane's restorable top-level cwd is '$(cat "$dir/fake/cwd")', not the sparse copy"
+  [ ! -e "$copy/janus" ] && [ -f "$copy/alexis/f" ] \
+    || fail "the sparse copy does not hold exactly the chosen directories"
+  pass "a sparse herdr spawn takes no lease and moves the pane's top-level shell into its sparse copy"
+}
+
 test_failed_lease_refuses_without_a_record() {
   local id=lease-refused dir out status
   dir=$(make_lease_case "$id")
@@ -294,6 +325,7 @@ test_dropped_worktree_entry
 test_never_moving_worktree_entry
 
 test_fresh_spawn_leases_and_moves_the_top_level_shell
+test_sparse_spawn_moves_the_top_level_shell_into_its_copy
 test_failed_lease_refuses_without_a_record
 test_aborted_spawn_names_the_lease_it_keeps
 test_rolled_back_spawn_after_launch_names_the_lease_it_keeps

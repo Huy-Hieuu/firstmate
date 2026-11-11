@@ -2488,7 +2488,7 @@ The spawn then passes the same `--sparse`, and `bin/fm-spawn.sh` refuses a brief
 Firstmate creates the copy itself rather than taking one from a pool: a cone sparse checkout of the baseline plus the task's directories, beside the project at `<project-parent>/.fm-sparse/<task-id>/<project-name>`, started from the same freshened base as any other task.
 Top-level files are always present, and the worker adds a missing directory with `git sparse-checkout add <dir>`.
 Task meta records the effective set as `sparse=`.
-Sparse copies run on `backend=tmux`, and on `backend=orca`, where Orca opens the terminal in the copy firstmate created; other backends refuse `--sparse`.
+Sparse copies run on `backend=tmux` and `backend=herdr`, where the task's pane moves its shell into the copy, and on `backend=orca`, where Orca opens the terminal in the copy firstmate created; other backends refuse `--sparse`.
 `bin/fm-teardown.sh` removes a sparse copy only after the usual landed-work checks pass, and its header owns those rules; `bin/fm-spawn.sh --help` owns the creation mechanics.
 
 ## GitHub Enterprise hosts (config/github-hosts)

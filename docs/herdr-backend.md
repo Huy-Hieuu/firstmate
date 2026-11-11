@@ -20,6 +20,7 @@ Herdr provides the terminal session while Treehouse continues to provide task wo
 | Install Herdr and select it | [Setup](#setup) |
 | Why a command ran on a different `herdr` client | [Client selection](#client-selection) |
 | Where task tabs appear and how to watch them | [Watching and task containers](#watching-and-task-containers) |
+| How the sidebar reads as firstmate, second mates, and their workers | [Hierarchy tree](#hierarchy-tree) |
 | The one-task workspaces, their setting, and their cleanup | [Presentation spaces](#presentation-spaces) |
 | Grouping tasks by project with status tags and a sorted agents list | [Project groups](#project-groups) |
 | Why a seeded default tab is or is not closed | [Default-tab prune safety](#default-tab-prune-safety) |
@@ -107,9 +108,31 @@ When the launcher has no Herdr workspace to inherit, the adapter maintains one d
 | Home | Workspace label |
 | --- | --- |
 | Primary | `firstmate` |
-| Secondmate | `2ndmate-<secondmate-id>`, derived from its validated `.fm-secondmate-home` marker |
+| Secondmate | `2ndmate-<secondmate-id>`, derived from its validated `.fm-secondmate-home` marker; a newly created one is labeled `└ 2ndmate-<secondmate-id>` ([Hierarchy tree](#hierarchy-tree)) |
 
 A secondmate launched by the primary receives a narrowly scoped home override during container creation.
+Lookups accept a secondmate workspace under either label form, and the two forms together must still identify exactly one workspace.
+
+### Hierarchy tree
+
+The sidebar reads as a tree: `firstmate`, then its own workers, then each second mate, then that mate's workers.
+
+```text
+firstmate
+└ fix-login · p:<token>
+└ 2ndmate-web
+  └ web-audit · p:<token>
+└ 2ndmate-data
+```
+
+- A `--secondmate` launch that creates the mate's workspace labels it `└ 2ndmate-<id>` and moves it once to sit after the launcher's own workspace and the tree entries already under it, so mates keep their launch order.
+  The launcher's workspace is resolved from its own Herdr identity, or from the unique `firstmate` workspace when the launcher runs outside Herdr.
+- A projected worker started from a secondmate home is indented one level, `  └ <task> · p:<token>`, so it reads as that mate's child.
+- Placement uses the same verified `workspace.move` path, presentation-order lock, and focus restore as [Ordering](#ordering), moves only the new mate workspace, and never fails the spawn: any unavailable, ambiguous, or failed step leaves the mate where Herdr created it with a warning.
+- An existing mate workspace is never moved or renamed, so a mate launched before this keeps its flat `2ndmate-<id>` label until its workspace is next recreated.
+- Labels and indentation stay presentation only; recorded ids remain the endpoint authority, and journals, recovery, and startup cleanup accept a worker label at either depth.
+
+The agents list names each agent's workspace in its first row once the [Sidebar rows](#sidebar-rows) are applied, so a mate and its workers read by name rather than only by group tokens.
 
 ### Watching tasks
 
@@ -133,7 +156,7 @@ Older injection shapes are unverified, so a claimed launcher pane without the in
 With presentation spaces disabled, a crewmate or scout is created in the exact workspace that identity currently resolves to.
 That workspace is read live from Herdr rather than from the injected snapshot, so the worker always appears beside the agent that launched it.
 Duplicate labels elsewhere in the session are irrelevant, and the globally focused workspace is never the target.
-A `--secondmate` launch is the deliberate exception: it stands up that secondmate home's own workspace instead of joining the launcher's.
+A `--secondmate` launch is the deliberate exception: it stands up that secondmate home's own workspace instead of joining the launcher's, then places it under the launcher ([Hierarchy tree](#hierarchy-tree)).
 
 ### Unresolvable launcher identity
 
@@ -153,7 +176,7 @@ Firstmate running outside Herdr entirely has no launcher workspace to inherit, s
 That path needs the home label to identify exactly one workspace.
 Two workspaces sharing it are an unresolvable placement and refuse rather than adopting either.
 
-Avoid naming a personal workspace `firstmate` or `2ndmate-<id>` for that reason.
+Avoid naming a personal workspace `firstmate`, `2ndmate-<id>`, or `└ 2ndmate-<id>` for that reason.
 Also avoid it because the adapter cannot distinguish that label collision from its own container.
 
 An older secondmate workspace using `firstmate-<id>` is not migrated automatically.
@@ -282,7 +305,7 @@ An ambiguous response grants no mutation or cleanup authority.
 Protocol 16 exposes `workspace.move` over the named session socket but no CLI subcommand.
 `bin/backends/herdr-workspace-move.py` sends only that whitelisted method and verifies the complete returned workspace order.
 
-Projected children are placed in one contiguous block immediately after their owning home when all of these are verifiable:
+Projected children are placed in one contiguous block immediately after their owning home when all of these are verifiable (a secondmate home's indented children count as part of its block, and a `└ 2ndmate-<id>` workspace starts a new owning home):
 
 - The session layout.
 - The protocol.
@@ -369,6 +392,7 @@ Once the exact pane is confirmed gone, teardown retires the task's own journal w
 ### Restart recovery
 
 A fresh task leases its task copy durably with `treehouse get --lease` and then moves the pane's top-level shell into it.
+A task on a sparse-registered project instead gets its own sparse copy beside the project (`bin/fm-spawn.sh --sparse`, as on tmux), takes no lease, and moves the shell into that copy the same way; teardown closes the exact pane before removing the copy.
 Herdr restores a pane from the cwd of that top-level shell, and the pane's `cwd` field does not follow the nested shell an interactive `treehouse get` opens, so a restart would otherwise reopen the worker in the primary clone.
 The lease outlives the pane: teardown closes the exact pane before it returns the lease, because returning the copy ends the pane's top-level shell and Herdr would then remove the pane outside the focus-preserving close.
 An aborted spawn returns the lease only when Herdr confirms the task pane gone and the copy holds no uncommitted work; otherwise it names the `treehouse return --force` command.
@@ -415,7 +439,7 @@ Locked session start has one narrower cleanup for a restored projected child tha
 It runs only when the current home has at least one ordinary presentation journal, and it considers only that home.
 A primary never recursively sweeps a secondmate home.
 
-Discovery starts from the exact current `└ <concise-task> · p:<22-character-token>` grammar, but a title or token alone is never mutation authority.
+Discovery starts from the exact current `└ <concise-task> · p:<22-character-token>` grammar, at either tree depth, but a title or token alone is never mutation authority.
 A candidate must meet all of these conditions:
 
 - The title must contain exactly one token occurrence across the named-session snapshot.
@@ -602,10 +626,13 @@ rows = [
 
 [ui.sidebar.agents]
 rows = [
-  ["state_icon", { token = "$fm_group", bold = true }, "$fm_state", "$fm_task"],
+  ["state_icon", "workspace"],
+  [{ token = "$fm_group", bold = true }, "$fm_state", "$fm_task"],
 ]
 ```
 
+The first agents row names the agent's workspace, so `firstmate`, each `└ 2ndmate-<id>`, and each worker read by name even when a task carries no group token.
+`herdr config check` accepts these rows on Herdr 0.9.3.
 Run `herdr server reload-config` afterwards to apply them.
 Colors can be added with Herdr's inline token styles.
 
