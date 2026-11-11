@@ -10,7 +10,8 @@
 # shared named-session Herdr presentation lock, in that order.
 #
 # A visible title is discovery only. Cleanup requires the exact current
-# "└ <concise-task> · p:<22-char-token>" grammar, one token occurrence across
+# "└ <concise-task> · p:<22-char-token>" grammar, at depth 0 or indented one
+# tree level as a secondmate home's child is, one token occurrence across
 # the named-session snapshot, exactly one matching home-local journal, one tab,
 # one pane, absent task metadata, no registered agent, and a process proof that
 # the pane contains only one idle recognized shell with no child process. A
@@ -42,6 +43,7 @@ fm_herdr_cleanup_warn() {
 
 fm_herdr_cleanup_title_token() { # <workspace-title>
   local title=$1 prefix token rest
+  title=${title#"$FM_BACKEND_HERDR_TREE_INDENT"}
   case "$title" in
     '└ '*' · p:'*) ;;
     *) return 1 ;;
@@ -63,7 +65,7 @@ fm_herdr_cleanup_home_identity() {
 }
 
 fm_herdr_cleanup_journal_matches() { # <title> <session> <home-real>
-  local title=$1 session=$2 home_real=$3 journal id expected journal_home
+  local title=$1 session=$2 home_real=$3 journal id journal_home
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || return 1
   for journal in "$STATE"/*"$FM_BACKEND_HERDR_PRESENTATION_JOURNAL_SUFFIX"; do
     [ -f "$journal" ] && [ ! -L "$journal" ] || continue
@@ -76,9 +78,8 @@ fm_herdr_cleanup_journal_matches() { # <title> <session> <home-real>
       [ "$journal_home" = "$home_real" ] \
         && [ "$FM_BACKEND_HERDR_JOURNAL_SESSION" = "$session" ] || continue
     fi
-    expected=$(fm_backend_herdr_projection_workspace_label \
-      "$id" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID")
-    [ "$expected" = "$title" ] || continue
+    fm_backend_herdr_projection_workspace_label_matches "$title" \
+      "$id" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID" || continue
     printf '%s\t%s\t%s\n' "$journal" "$id" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID"
   done
 }

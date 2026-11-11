@@ -120,13 +120,14 @@ test_sparse_disagreements_refuse_before_any_copy() {
 
   id=sparse-refuse-backend-t1
   brief "$id" --mode direct-PR --sparse alexis
-  out=$(run_spawn "$id" --mode direct-PR --yolo off --sparse alexis --backend herdr)
+  out=$(run_spawn "$id" --mode direct-PR --yolo off --sparse alexis --backend zellij)
   status=$?
   [ "$status" -ne 0 ] || fail "a sparse copy on an unsupported backend should be refused"
-  assert_contains "$out" "backend=tmux or backend=orca only" "the backend refusal did not name the supported backends"
+  assert_contains "$out" "backend=tmux, backend=herdr, or backend=orca only" "the backend refusal did not name the supported backends"
 
   out=$(run_spawn sparse-refuse-relaunch-t1 --relaunch --sparse alexis)
-  [ "$?" -ne 0 ] || fail "--relaunch --sparse should be refused"
+  status=$?
+  [ "$status" -ne 0 ] || fail "--relaunch --sparse should be refused"
   assert_contains "$out" "--sparse cannot change it" "the relaunch refusal did not explain itself"
 
   [ ! -e "$CASE_DIR/work/.fm-sparse" ] || fail "a refused spawn created a sparse copy"

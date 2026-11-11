@@ -366,6 +366,22 @@ fm_backend_herdr_workspace_label() {
   printf 'firstmate'
 }
 
+# fm_backend_herdr_workspace_display_label: the label a workspace for this
+# HOME is CREATED with, which is purely visual (docs/herdr-backend.md
+# "Hierarchy tree"). The primary keeps "firstmate"; a secondmate home's
+# workspace carries the tree prefix, "└ 2ndmate-<id>", so the sidebar reads
+# main -> second mate -> worker. Lookups accept both this and the bare
+# fm_backend_herdr_workspace_label form (fm_backend_herdr_workspace_find_all),
+# so an existing flat 2ndmate-<id> workspace keeps working and is never renamed.
+fm_backend_herdr_workspace_display_label() {
+  local label
+  label=$(fm_backend_herdr_workspace_label)
+  case "$label" in
+    2ndmate-*) printf '└ %s' "$label" ;;
+    *) printf '%s' "$label" ;;
+  esac
+}
+
 # fm_backend_herdr_cli: run `herdr <args...>` scoped to <session>, setting
 # BOTH the HERDR_SESSION env var AND appending a trailing `--session <name>`
 # CLI flag. Verified empirically (docs/herdr-backend.md "Session targeting: the
@@ -615,7 +631,7 @@ fm_backend_herdr_projection_journal_field() {  # <journal> <key>
 # journal or a version 2 exact projection binding without sourcing shell code.
 # Version 2 sets FM_BACKEND_HERDR_JOURNAL_* globals for same-process callers.
 fm_backend_herdr_projection_journal_snapshot() {  # <journal> <task-id>
-  local journal=$1 id=$2 lines expected_label expected_task_label exact
+  local journal=$1 id=$2 lines expected_task_label exact
   FM_BACKEND_HERDR_JOURNAL_VERSION=""
   FM_BACKEND_HERDR_JOURNAL_TASK_ID=""
   FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID=""
@@ -669,9 +685,9 @@ fm_backend_herdr_projection_journal_snapshot() {  # <journal> <task-id>
   [ -n "$FM_BACKEND_HERDR_JOURNAL_PARENT_LABEL" ] \
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" ] \
     && [ -n "$FM_BACKEND_HERDR_JOURNAL_TASK_LABEL" ] || return 1
-  expected_label=$(fm_backend_herdr_projection_workspace_label "$id" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID")
   expected_task_label="fm-$id"
-  [ "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" = "$expected_label" ] \
+  fm_backend_herdr_projection_workspace_label_matches "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" \
+    "$id" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID" \
     && [ "$FM_BACKEND_HERDR_JOURNAL_TASK_LABEL" = "$expected_task_label" ]
 }
 
@@ -762,12 +778,59 @@ fm_backend_herdr_projection_concise_task_label() {  # <task-id>
   printf '%s' "$task"
 }
 
+# FM_BACKEND_HERDR_TREE_JQ_DEFS: the one jq vocabulary for the hierarchy tree,
+# prepended to every workspace-list program that classifies labels. A home
+# label matches bare (firstmate, 2ndmate-<id>) or, for a secondmate, in its
+# `└ 2ndmate-<id>` tree form; a projected child is `└ … · p:<token>` at depth
+# 0 or indented one level; legacy owner/... children stay read-only.
+# shellcheck disable=SC2016  # jq source: its $vars are jq's, never the shell's
+FM_BACKEND_HERDR_TREE_JQ_DEFS='
+    def home_label_is($home):
+      (.label | type) == "string"
+      and (.label == $home
+        or (($home | startswith("2ndmate-")) and .label == ("└ " + $home)));
+    def is_tree_secondmate:
+      (.label | type) == "string"
+      and (.label | test("^└ 2ndmate-[^/ ]+$"));
+    def is_top_level_parent:
+      (.label | type) == "string"
+      and ((.label == "firstmate") or (.label | test("^2ndmate-[^/]+$")) or is_tree_secondmate);
+    def top_level_owner: .label | ltrimstr("└ ");
+    def is_new_child:
+      (.label | type) == "string"
+      and (.label | test("^(  )?└ .+ · p:[A-Za-z0-9_-]{22}$"));
+    def is_legacy_child:
+      (.label | type) == "string"
+      and (.label | test("^(firstmate|2ndmate-[^/]+)/.+ · p:[A-Za-z0-9_-]{22}$"));
+    def is_legacy_child_for($owner):
+      is_legacy_child and (.label | startswith($owner + "/"));
+    def is_child_for($owner):
+      is_new_child or is_legacy_child_for($owner);
+'
+
 # fm_backend_herdr_projection_workspace_label: presentation-only child label.
 # Format is literal U+2514 BOX DRAWINGS LIGHT UP AND RIGHT, one space, the
-# concise task label, then the unchanged · p:<full-22-char-token> suffix.
+# concise task label, then the unchanged · p:<full-22-char-token> suffix. A
+# child launched from a secondmate home (FM_HOME) is one tree level deeper, so
+# its label starts with FM_BACKEND_HERDR_TREE_INDENT (two spaces).
 # Labels and tokens remain non-authoritative correlators only.
+FM_BACKEND_HERDR_TREE_INDENT='  '
 fm_backend_herdr_projection_workspace_label() {  # <task-id> <projection-id>
-  printf '└ %s · p:%s' "$(fm_backend_herdr_projection_concise_task_label "$1")" "$2"
+  local indent=
+  case "$(fm_backend_herdr_workspace_label)" in
+    2ndmate-*) indent=$FM_BACKEND_HERDR_TREE_INDENT ;;
+  esac
+  printf '%s└ %s · p:%s' "$indent" "$(fm_backend_herdr_projection_concise_task_label "$1")" "$2"
+}
+
+# fm_backend_herdr_projection_workspace_label_matches: whether <label> is the
+# child label derived for <task-id> and <projection-id> at either tree depth.
+# Depth is presentation only, so a journal written before or after a home
+# gained the indent validates the same way from any FM_HOME.
+fm_backend_herdr_projection_workspace_label_matches() {  # <label> <task-id> <projection-id>
+  local base
+  base="└ $(fm_backend_herdr_projection_concise_task_label "$2") · p:$3"
+  [ "$1" = "$base" ] || [ "$1" = "$FM_BACKEND_HERDR_TREE_INDENT$base" ]
 }
 
 # fm_backend_herdr_presentation_session_lock_path: one account-private lock
@@ -1504,8 +1567,7 @@ fm_backend_herdr_pane_idle_shell_sample() {  # <session> <pane-id>
 # After a successful move, every pre-existing workspace id sequence excluding
 # the new id must be byte-identical to the pre-move sequence.
 fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspace-id> <parent-label> [<parent-workspace-id>] [<group-order-key>]
-  local session=$1 created=$2 parent=$3 parent_ws=${4:-} group_key=${5:-} list analysis current desired socket mover response move_status focus_before move_capable
-  local before_existing after_existing
+  local session=$1 created=$2 parent=$3 parent_ws=${4:-} group_key=${5:-} list analysis current desired
   [ -n "$parent" ] || {
     echo "warning: herdr presentation ordering missing owning parent label; leaving worker in Herdr's current order" >&2
     return 0
@@ -1514,25 +1576,12 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
     echo "warning: herdr presentation ordering could not list workspaces; leaving worker in Herdr's current order" >&2
     return 0
   }
-  analysis=$(printf '%s' "$list" | jq -c --arg created "$created" --arg parent "$parent" --arg parent_ws "$parent_ws" --arg group_key "$group_key" '
+  analysis=$(printf '%s' "$list" | jq -c --arg created "$created" --arg parent "$parent" --arg parent_ws "$parent_ws" --arg group_key "$group_key" "$FM_BACKEND_HERDR_TREE_JQ_DEFS"'
     def is_parent:
       if ($parent_ws | length) > 0
       then .workspace_id == $parent_ws
-      else (.label | type) == "string" and .label == $parent
+      else home_label_is($parent)
       end;
-    def is_top_level_parent:
-      (.label | type) == "string"
-      and ((.label == "firstmate") or (.label | test("^2ndmate-[^/]+$")));
-    def is_new_child:
-      (.label | type) == "string"
-      and (.label | test("^└ .+ · p:[A-Za-z0-9_-]{22}$"));
-    def is_legacy_child:
-      (.label | type) == "string"
-      and (.label | test("^(firstmate|2ndmate-[^/]+)/.+ · p:[A-Za-z0-9_-]{22}$"));
-    def is_legacy_child_for($owner):
-      is_legacy_child and (.label | startswith($owner + "/"));
-    def is_child_for($owner):
-      is_new_child or is_legacy_child_for($owner);
     (.result.workspaces // null) as $spaces
     | select(($spaces | type) == "array" and ($spaces | length) > 0)
     | ([range(0; $spaces | length) | select($spaces[.].workspace_id == $created)]) as $matches
@@ -1556,7 +1605,7 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
         {valid: true, active_parent: null};
         if .valid == false then .
         elif ($spaces[$i] | is_top_level_parent) then
-          .active_parent = $spaces[$i].label
+          .active_parent = ($spaces[$i] | top_level_owner)
         elif ($spaces[$i] | is_new_child) then
           if .active_parent == null then .valid = false else . end
         elif ($spaces[$i] | is_legacy_child) then
@@ -1605,7 +1654,23 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
       ;;
   esac
   [ "$current" != "$desired" ] || return 0
+  fm_backend_herdr_workspace_move_verified "$session" "$created" "$desired" \
+    "$parent" "$parent_ws" "$(printf '%s' "$analysis" | jq -c '.existing' 2>/dev/null)" "herdr presentation"
+  return 0
+}
 
+# fm_backend_herdr_workspace_move_verified: the one move-and-verify step shared
+# by projected-child ordering and secondmate placement. Moves exactly
+# <created-workspace-id> to <desired-index> through the verified workspace.move
+# API under a captured-and-restored focus snapshot, then checks the response
+# puts it there after its unique parent (exact <parent-workspace-id>, else
+# <parent-label> by home label) and that <existing-ids-json>, the pre-move
+# order of every other workspace id, is unchanged. Presentation-only: every
+# unavailable, failed, or unverifiable step warns with <warning-prefix> and the
+# function still returns success; it never retries, closes, or renames.
+fm_backend_herdr_workspace_move_verified() {  # <session> <created-workspace-id> <desired-index> <parent-label> <parent-workspace-id> <existing-ids-json> <warning-prefix>
+  local session=$1 created=$2 desired=$3 parent=$4 parent_ws=$5 before_existing=$6 what=$7
+  local socket mover response move_status focus_before move_capable after_existing
   if fm_backend_herdr_workspace_move_capable "$session"; then
     move_capable=0
   else
@@ -1614,34 +1679,34 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
   case "$move_capable" in
     0) ;;
     1)
-      echo "warning: herdr presentation ordering requires python3; leaving worker in Herdr's current order" >&2
+      echo "warning: $what ordering requires python3; leaving worker in Herdr's current order" >&2
       return 0
       ;;
     2)
-      echo "warning: herdr presentation ordering could not verify the client protocol; leaving worker in Herdr's current order" >&2
+      echo "warning: $what ordering could not verify the client protocol; leaving worker in Herdr's current order" >&2
       return 0
       ;;
     3)
-      echo "warning: herdr presentation ordering needs protocol $FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL or newer; leaving worker in Herdr's current order" >&2
+      echo "warning: $what ordering needs protocol $FM_BACKEND_HERDR_MIN_WORKSPACE_MOVE_PROTOCOL or newer; leaving worker in Herdr's current order" >&2
       return 0
       ;;
     4)
-      echo "warning: herdr presentation ordering could not read the API schema; leaving worker in Herdr's current order" >&2
+      echo "warning: $what ordering could not read the API schema; leaving worker in Herdr's current order" >&2
       return 0
       ;;
     *)
-      echo "warning: herdr presentation ordering API support is unavailable or ambiguous; leaving worker in Herdr's current order" >&2
+      echo "warning: $what ordering API support is unavailable or ambiguous; leaving worker in Herdr's current order" >&2
       return 0
       ;;
   esac
   socket=$(fm_backend_herdr_presentation_session_socket_path "$session") || {
-    echo "warning: herdr presentation ordering found an ambiguous named session socket; leaving worker in Herdr's current order" >&2
+    echo "warning: $what ordering found an ambiguous named session socket; leaving worker in Herdr's current order" >&2
     return 0
   }
 
   mover=${FM_BACKEND_HERDR_WORKSPACE_MOVER:-$FM_BACKEND_HERDR_ROOT/bin/backends/herdr-workspace-move.py}
   focus_before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
-    echo "warning: herdr presentation ordering could not capture exact active workspace and tab; leaving worker in Herdr's current order" >&2
+    echo "warning: $what ordering could not capture exact active workspace and tab; leaving worker in Herdr's current order" >&2
     return 0
   }
   if response=$("$mover" "$socket" "$created" "$desired" 2>/dev/null); then
@@ -1651,14 +1716,14 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
   fi
   fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "workspace move" || true
   if [ "$move_status" -ne 0 ]; then
-    echo "warning: herdr presentation workspace move failed or had an ambiguous response; leaving worker running without cleanup" >&2
+    echo "warning: $what workspace move failed or had an ambiguous response; leaving worker running without cleanup" >&2
     return 0
   fi
-  if ! printf '%s' "$response" | jq -e --arg created "$created" --arg parent "$parent" --arg parent_ws "$parent_ws" --argjson desired "$desired" '
+  if ! printf '%s' "$response" | jq -e --arg created "$created" --arg parent "$parent" --arg parent_ws "$parent_ws" --argjson desired "$desired" "$FM_BACKEND_HERDR_TREE_JQ_DEFS"'
     def is_parent:
       if ($parent_ws | length) > 0
       then .workspace_id == $parent_ws
-      else (.label | type) == "string" and .label == $parent
+      else home_label_is($parent)
       end;
     .result.type == "workspace_list"
     and (.result.workspaces | type) == "array"
@@ -1670,15 +1735,80 @@ fm_backend_herdr_projection_order_best_effort() {  # <session> <created-workspac
         | $i][0] < $desired
     )
   ' >/dev/null 2>&1; then
-    echo "warning: herdr presentation workspace move returned an unverifiable order; leaving worker running without cleanup" >&2
+    echo "warning: $what workspace move returned an unverifiable order; leaving worker running without cleanup" >&2
     return 0
   fi
 
-  before_existing=$(printf '%s' "$analysis" | jq -c '.existing' 2>/dev/null)
   after_existing=$(printf '%s' "$response" | jq -c --arg created "$created" '[.result.workspaces[] | select(.workspace_id != $created) | .workspace_id]' 2>/dev/null)
   if [ "$after_existing" != "$before_existing" ]; then
-    echo "warning: herdr presentation workspace move did not preserve relative order; leaving worker running without cleanup" >&2
+    echo "warning: $what workspace move did not preserve relative order; leaving worker running without cleanup" >&2
   fi
+  return 0
+}
+
+# fm_backend_herdr_secondmate_order_best_effort: place the exact workspace id
+# returned by THIS secondmate-home workspace create (labeled
+# `└ 2ndmate-<id>`) directly after <launcher-workspace-id>, the exact workspace
+# of the firstmate that launched it, and after the run of tree entries already
+# following it there: its projected children, earlier `└ 2ndmate-*` secondmate
+# workspaces, and their indented children. The sidebar therefore reads
+# firstmate -> its workers -> each second mate -> that mate's workers.
+# Same contract as fm_backend_herdr_projection_order_best_effort: the created
+# workspace must be the unique last one, only it ever moves, every other id
+# keeps its relative order, and every unavailable, ambiguous, or failed step
+# warns and returns success. The caller holds the presentation-order lock.
+fm_backend_herdr_secondmate_order_best_effort() {  # <session> <created-workspace-id> <launcher-workspace-id>
+  local session=$1 created=$2 launcher_ws=$3 list analysis current desired
+  [ -n "$created" ] && [ -n "$launcher_ws" ] || {
+    echo "warning: herdr secondmate ordering missing the launcher workspace; leaving worker in Herdr's current order" >&2
+    return 0
+  }
+  list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || {
+    echo "warning: herdr secondmate ordering could not list workspaces; leaving worker in Herdr's current order" >&2
+    return 0
+  }
+  analysis=$(printf '%s' "$list" | jq -c --arg created "$created" --arg launcher "$launcher_ws" "$FM_BACKEND_HERDR_TREE_JQ_DEFS"'
+    def is_tree_entry: is_new_child or is_legacy_child or is_tree_secondmate;
+    (.result.workspaces // null) as $spaces
+    | select(($spaces | type) == "array" and ($spaces | length) > 0)
+    | ([range(0; $spaces | length) | select($spaces[.].workspace_id == $created)]) as $matches
+    | select(($matches | length) == 1)
+    | ($matches[0]) as $current
+    | select($current == (($spaces | length) - 1))
+    | ([range(0; $spaces | length) | select($spaces[.].workspace_id == $launcher)]) as $parents
+    | select(($parents | length) == 1)
+    | ($parents[0]) as $pidx
+    | select($pidx < $current)
+    | (
+        reduce range($pidx + 1; $current) as $i (
+          0;
+          if ($spaces[$i] | is_tree_entry) and (. == ($i - $pidx - 1))
+          then . + 1
+          else .
+          end
+        )
+      ) as $run
+    | {
+        current: $current,
+        desired: ($pidx + 1 + $run),
+        existing: [$spaces[] | select(.workspace_id != $created) | .workspace_id]
+      }
+  ' 2>/dev/null) || analysis=
+  [ -n "$analysis" ] || {
+    echo "warning: herdr secondmate ordering found an ambiguous workspace layout; leaving worker in Herdr's current order" >&2
+    return 0
+  }
+  current=$(printf '%s' "$analysis" | jq -r '.current // empty' 2>/dev/null)
+  desired=$(printf '%s' "$analysis" | jq -r '.desired // empty' 2>/dev/null)
+  case "$current:$desired" in
+    *[!0-9:]* | :* | *:)
+      echo "warning: herdr secondmate ordering could not parse the target position; leaving worker in Herdr's current order" >&2
+      return 0
+      ;;
+  esac
+  [ "$current" != "$desired" ] || return 0
+  fm_backend_herdr_workspace_move_verified "$session" "$created" "$desired" \
+    "" "$launcher_ws" "$(printf '%s' "$analysis" | jq -c '.existing' 2>/dev/null)" "herdr secondmate"
   return 0
 }
 
@@ -1767,9 +1897,11 @@ fm_backend_herdr_server_ensure() {  # <session>
 }
 
 # fm_backend_herdr_workspace_find_all: EVERY workspace id inside <session>
-# whose label equals this HOME's own label (fm_backend_herdr_workspace_label),
-# one per line, in herdr's own list order (normally creation order, oldest
-# first). Empty when none match. Never creates anything.
+# whose label equals this HOME's own label (fm_backend_herdr_workspace_label)
+# or, for a secondmate home, its `└ 2ndmate-<id>` tree form
+# (fm_backend_herdr_workspace_display_label), one per line, in herdr's own list
+# order (normally creation order, oldest first). Empty when none match. Never
+# creates anything.
 #
 # Single owner of the home-label workspace query. Herdr enforces no workspace
 # label uniqueness at all (docs/herdr-backend.md "Label collisions"), so this
@@ -1788,8 +1920,8 @@ fm_backend_herdr_workspace_find_all() {  # <session>
   # compile error that `2>/dev/null` would silently swallow, making this find
   # ALWAYS return empty and every spawn mint a fresh "firstmate" workspace
   # (the workspace leak).
-  printf '%s' "$list" | jq -r --arg want "$label" \
-    '.result.workspaces[]? | select(.label == $want) | .workspace_id' 2>/dev/null
+  printf '%s' "$list" | jq -r --arg want "$label" "$FM_BACKEND_HERDR_TREE_JQ_DEFS"'
+    .result.workspaces[]? | select(home_label_is($want)) | .workspace_id' 2>/dev/null
 }
 
 # fm_backend_herdr_workspace_find: this HOME's own workspace id inside
@@ -2088,7 +2220,7 @@ fm_backend_herdr_workspace_ensure() {  # <session> <cwd> [<launcher-relationship
     printf '%s' "$wsid"
     return 0
   fi
-  out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$cwd" --label "$label" --no-focus 2>/dev/null) || return 1
+  out=$(fm_backend_herdr_cli "$session" workspace create --cwd "$cwd" --label "$(fm_backend_herdr_workspace_display_label)" --no-focus 2>/dev/null) || return 1
   wsid=$(printf '%s' "$out" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null)
   [ -n "$wsid" ] || return 1
   FM_BACKEND_HERDR_WS_ID=$wsid
@@ -2841,13 +2973,15 @@ fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-p
 
 # fm_backend_herdr_projection_parent_workspace_exact: resolve one exact parent
 # workspace only when its presentation label is unique in the named session.
+# <parent-label> is the bare home label; a secondmate parent also matches in
+# its `└ 2ndmate-<id>` tree form, and the two forms count together.
 fm_backend_herdr_projection_parent_workspace_exact() {  # <session> <parent-label>
   local session=$1 parent_label=$2 list
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
-  printf '%s' "$list" | jq -er --arg parent_label "$parent_label" '
+  printf '%s' "$list" | jq -er --arg parent_label "$parent_label" "$FM_BACKEND_HERDR_TREE_JQ_DEFS"'
     (.result.workspaces // null) as $spaces
     | select(($spaces | type) == "array")
-    | [$spaces[]? | select(.label == $parent_label)]
+    | [$spaces[]? | select(home_label_is($parent_label))]
     | if length == 1
         and (.[0].workspace_id | type) == "string"
         and (.[0].workspace_id | length) > 0
@@ -2870,21 +3004,14 @@ fm_backend_herdr_projection_live_binding_matches() {  # <session> <token> <works
     --arg workspace "$workspace" \
     --arg parent_workspace "$parent_workspace" \
     --arg parent_label "$parent_label" \
-    --arg workspace_label "$workspace_label" '
-      def is_new_child:
-        (.label | type) == "string"
-        and (.label | test("^└ .+ · p:[A-Za-z0-9_-]{22}$"));
-      def is_legacy_child_for($owner):
-        (.label | type) == "string"
-        and (.label | test("^(firstmate|2ndmate-[^/]+)/.+ · p:[A-Za-z0-9_-]{22}$"))
-        and (.label | startswith($owner + "/"));
+    --arg workspace_label "$workspace_label" "$FM_BACKEND_HERDR_TREE_JQ_DEFS"'
       (.result.workspaces // null) as $spaces
       | select(($spaces | type) == "array")
       | select(([$spaces[]? | select(.workspace_id == $workspace)] | length) == 1)
       | select(([$spaces[]? | select(.workspace_id == $workspace and .label == $workspace_label)] | length) == 1)
       | select(([$spaces[]? | select((.label | type) == "string" and (.label | endswith(" · p:" + $token)))] | length) == 1)
       | select(([$spaces[]? | select((.label | type) == "string" and (.label | endswith(" · p:" + $token)) and .workspace_id == $workspace)] | length) == 1)
-      | select(([$spaces[]? | select(.workspace_id == $parent_workspace and .label == $parent_label)] | length) == 1)
+      | select(([$spaces[]? | select(.workspace_id == $parent_workspace and home_label_is($parent_label))] | length) == 1)
       | ([range(0; $spaces | length) | select($spaces[.].workspace_id == $parent_workspace)]) as $parents
       | ([range(0; $spaces | length) | select($spaces[.].workspace_id == $workspace)]) as $children
       | select(($parents | length) == 1 and ($children | length) == 1)

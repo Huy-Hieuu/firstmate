@@ -468,9 +468,12 @@ rows = [
   [{ token = "$fm_group", bold = true }, "$fm_state"],
 ]
 
+# The first agents row names the workspace, so an agent whose project has no
+# group token still reads as firstmate, a second mate, or a worker.
 [ui.sidebar.agents]
 rows = [
-  ["state_icon", { token = "$fm_group", bold = true }, "$fm_state", "$fm_task"],
+  ["state_icon", "workspace"],
+  [{ token = "$fm_group", bold = true }, "$fm_state", "$fm_task"],
 ]
 EOF
 }

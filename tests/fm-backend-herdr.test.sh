@@ -1890,14 +1890,28 @@ test_container_ensure_uses_secondmate_home_label() {
   printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
   printf '{"server":{"running":true}}\n' > "$resp/2.out"
   printf '{"result":{"workspaces":[]}}\n' > "$resp/3.out"
-  printf '{"result":{"workspace":{"workspace_id":"w9","label":"2ndmate-sshhip-h7"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
+  printf '{"result":{"workspace":{"workspace_id":"w9","label":"└ 2ndmate-sshhip-h7"},"tab":{"tab_id":"w9:t1"},"root_pane":{"pane_id":"w9:p1"}}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
     bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
   [ "$out" = $'fmtest:w9\tw9:t1' ] || fail "container_ensure did not echo the expected session:workspace_id + seeded default tab id, got '$out'"
-  assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''2ndmate-sshhip-h7' \
-    "container_ensure did not create the workspace under this secondmate home's own label"
-  pass "fm_backend_herdr_container_ensure: creates the workspace under the SECONDMATE home's own label, not 'firstmate'"
+  assert_contains "$(cat "$log")" $'\x1f''workspace'$'\x1f''create'$'\x1f''--cwd'$'\x1f''/tmp'$'\x1f''--label'$'\x1f''└ 2ndmate-sshhip-h7' \
+    "container_ensure did not create the workspace under this secondmate home's own tree label"
+
+  # A mate workspace created before the tree label keeps working: the flat
+  # label is adopted, never recreated or renamed.
+  dir="$TMP_ROOT/container-secondmate-flat"; mkdir -p "$dir/responses"; log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"client":{"version":"0.7.1","protocol":14}}\n' > "$resp/1.out"
+  printf '{"server":{"running":true}}\n' > "$resp/2.out"
+  printf '{"result":{"workspaces":[{"workspace_id":"w1","label":"firstmate"},{"workspace_id":"w7","label":"2ndmate-sshhip-h7"}]}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$( PATH="$fb:$PATH" FM_HOME="$home" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 HERDR_SESSION=fmtest \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_container_ensure /tmp' "$ROOT" )
+  [ "$out" = $'fmtest:w7\t' ] || fail "container_ensure did not adopt the existing flat secondmate workspace, got '$out'"
+  if grep -qE $'workspace\x1f''(create|rename)' "$log"; then
+    fail "container_ensure created or renamed a workspace although a flat secondmate workspace existed"
+  fi
+  pass "fm_backend_herdr_container_ensure: creates the SECONDMATE home's workspace under its tree label and still adopts a flat one"
 }
 
 test_create_task_creates_with_no_focus_flag() {
@@ -3460,7 +3474,94 @@ test_projection_label_builder_uses_corner_and_strips_owner_prefixes() {
   [ "$primary" = "└ task-p2 · p:$token" ] \
     || fail "presentation fm- owner prefix was not stripped: $primary"
   case "$primary" in $'└ '*) ;; *) fail "label must start with U+2514 and one space" ;; esac
-  pass "herdr presentation labels: └ concise-task · p:<full-token> for primary and secondmate children"
+  mkdir -p "$TMP_ROOT/label-tree-home"; printf 'alpha\n' > "$TMP_ROOT/label-tree-home/.fm-secondmate-home"
+  secondmate=$(FM_HOME="$TMP_ROOT/label-tree-home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label child '"$token" "$ROOT")
+  [ "$secondmate" = "  └ child · p:$token" ] \
+    || fail "a secondmate home's child label was not indented one tree level: '$secondmate'"
+  FM_HOME="$TMP_ROOT/label-tree-home" bash -c '. "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_projection_workspace_label_matches "└ child · p:$1" child "$1" &&
+    fm_backend_herdr_projection_workspace_label_matches "  └ child · p:$1" child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "    └ child · p:$1" child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "  └ other · p:$1" child "$1"' "$ROOT" "$token" \
+    || fail "child label matching must accept exactly depth 0 and one indent level for the same task and token"
+  pass "herdr presentation labels: └ concise-task · p:<full-token>, indented one level for a secondmate home's children"
+}
+
+# run_tree_order_case <name> <workspaces-json-array> <bash-call>: one ordering
+# call against the listed layout, whose last entry is the new workspace w9;
+# the mover answers with w9 at the requested index. Prints the requested
+# index (or nothing) and then any warning output.
+run_tree_order_case() {
+  local name=$1 spaces=$2 call=$3 dir log resp fb mover mover_log out
+  dir="$TMP_ROOT/tree-order-$name"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; mover="$dir/mover"; mover_log="$dir/mover.log"
+  : > "$log"; : > "$mover_log"
+  jq -cn --argjson w "$spaces" '{result: {workspaces: $w}}' > "$dir/base.json"
+  cp "$dir/base.json" "$resp/1.out"
+  printf '%s\n' '{"client":{"version":"0.9.3","protocol":22},"server":{"running":true}}' > "$resp/2.out"
+  # shellcheck disable=SC2016 # $defs is a literal JSON Schema key.
+  printf '%s\n' '{"schemas":{"request":{"oneOf":[{"properties":{"method":{"const":"workspace.move"}}}],"$defs":{"WorkspaceMoveParams":{"required":["workspace_id","insert_index"],"properties":{"insert_index":{"type":"integer"}}}}}}}' > "$resp/3.out"
+  printf '%s\n' '{"sessions":[{"name":"fmtest","running":true,"socket_path":"/tmp/fmtest.sock"}]}' > "$resp/4.out"
+  cat > "$mover" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$3" >> "$FM_FAKE_MOVER_LOG"
+jq -c --argjson at "$3" '
+  .result.workspaces as $w
+  | ([$w[] | select(.workspace_id != "w9")]) as $rest
+  | {id: "fm-workspace-move", result: {type: "workspace_list",
+      workspaces: ($rest[0:$at] + [$w[-1]] + $rest[$at:])}}' "$FM_FAKE_BASE"
+SH
+  chmod +x "$mover"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" FM_HERDR_SCRIPT_STATUS=1 \
+    FM_BACKEND_HERDR_WORKSPACE_MOVER="$mover" FM_FAKE_MOVER_LOG="$mover_log" FM_FAKE_BASE="$dir/base.json" \
+    bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_focus_snapshot() { printf "w1\tw1:t1"; }; fm_backend_herdr_projection_focus_restore() { return 0; }; '"$call" "$ROOT" 2>&1) \
+    || fail "tree ordering $name must not fail the spawn: $out"
+  assert_not_contains "$(cat "$log")" $'workspace\x1frename' "tree ordering $name renamed a workspace"
+  assert_not_contains "$(cat "$log")" $'workspace\x1fclose' "tree ordering $name closed a workspace"
+  cat "$mover_log"
+  printf '%s' "$out"
+}
+
+test_secondmate_order_places_mate_after_launcher_tree() {
+  local at
+  at=$(run_tree_order_case after-tree '[{"workspace_id":"w1","label":"firstmate"},
+    {"workspace_id":"w2","label":"└ fix · p:AbCdEfGhIjKlMnOpQrStU1"},
+    {"workspace_id":"w3","label":"└ 2ndmate-alpha"},
+    {"workspace_id":"w4","label":"  └ a1 · p:AbCdEfGhIjKlMnOpQrStU2"},
+    {"workspace_id":"wH","label":"captain-notes"},
+    {"workspace_id":"w9","label":"└ 2ndmate-bravo"}]' \
+    'fm_backend_herdr_secondmate_order_best_effort fmtest w9 w1')
+  [ "$at" = 4 ] || fail "a new mate must land after the launcher, its children, and earlier mate subtrees, before a captain space; got: $at"
+  at=$(run_tree_order_case flat-mate-stops '[{"workspace_id":"w1","label":"firstmate"},
+    {"workspace_id":"w3","label":"2ndmate-alpha"},
+    {"workspace_id":"w4","label":"└ a1 · p:AbCdEfGhIjKlMnOpQrStU2"},
+    {"workspace_id":"w9","label":"└ 2ndmate-bravo"}]' \
+    'fm_backend_herdr_secondmate_order_best_effort fmtest w9 w1')
+  [ "$at" = 1 ] || fail "a flat legacy mate is a top-level entry the new mate must not split; got: $at"
+  at=$(run_tree_order_case not-last '[{"workspace_id":"w1","label":"firstmate"},
+    {"workspace_id":"w9","label":"└ 2ndmate-bravo"},
+    {"workspace_id":"wH","label":"captain-notes"}]' \
+    'fm_backend_herdr_secondmate_order_best_effort fmtest w9 w1')
+  case "$at" in
+    *"herdr secondmate ordering found an ambiguous workspace layout"*) ;;
+    *) fail "a mate workspace that is not the newest must stay put with a warning; got: $at" ;;
+  esac
+  at=$(run_tree_order_case child-under-tree-mate '[{"workspace_id":"w1","label":"firstmate"},
+    {"workspace_id":"w3","label":"└ 2ndmate-alpha"},
+    {"workspace_id":"w4","label":"  └ a1 · p:AbCdEfGhIjKlMnOpQrStU2"},
+    {"workspace_id":"w5","label":"└ 2ndmate-bravo"},
+    {"workspace_id":"w9","label":"  └ a2 · p:ZyXwVuTsRqPoNmLkJiHgFe"}]' \
+    'fm_backend_herdr_projection_order_best_effort fmtest w9 2ndmate-alpha')
+  [ "$at" = 3 ] || fail "an indented child must append under its tree-labeled mate found by its home label; got: $at"
+  at=$(run_tree_order_case primary-child-before-mates '[{"workspace_id":"w1","label":"firstmate"},
+    {"workspace_id":"w2","label":"└ fix · p:AbCdEfGhIjKlMnOpQrStU1"},
+    {"workspace_id":"w3","label":"└ 2ndmate-alpha"},
+    {"workspace_id":"w4","label":"  └ a1 · p:AbCdEfGhIjKlMnOpQrStU2"},
+    {"workspace_id":"w9","label":"└ new · p:ZyXwVuTsRqPoNmLkJiHgFe"}]' \
+    'fm_backend_herdr_projection_order_best_effort fmtest w9 firstmate w1')
+  [ "$at" = 2 ] || fail "a primary child must stay above the mate subtrees; got: $at"
+  pass "herdr hierarchy tree: a new mate lands after the launcher's subtree and children stay under their own mate"
 }
 
 test_projection_order_moves_only_exact_new_workspace_and_preserves_relative_order() {
@@ -6660,6 +6761,7 @@ test_projection_seeded_prune_refuses_active_tab
 test_projection_label_builder_uses_corner_and_strips_owner_prefixes
 test_projection_order_moves_only_exact_new_workspace_and_preserves_relative_order
 test_projection_order_secondmate_parent_block
+test_secondmate_order_places_mate_after_launcher_tree
 test_projection_order_group_key_places_new_task_inside_its_group
 test_projection_order_foreign_legacy_child_is_read_only
 test_projection_order_allows_intervening_parent_child_block
