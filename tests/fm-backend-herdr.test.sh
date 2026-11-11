@@ -3475,8 +3475,8 @@ test_projection_label_builder_uses_corner_and_strips_owner_prefixes() {
     || fail "presentation fm- owner prefix was not stripped: $primary"
   mkdir -p "$TMP_ROOT/label-tree-home"; printf 'alpha\n' > "$TMP_ROOT/label-tree-home/.fm-secondmate-home"
   secondmate=$(FM_HOME="$TMP_ROOT/label-tree-home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label de-dag-reuse '"$token"' momo' "$ROOT")
-  [ "$secondmate" = "    └ momo · de-dag-reuse · p:$token" ] \
-    || fail "a secondmate home's child label was not indented two tree levels: '$secondmate'"
+  [ "$secondmate" = "    └ alpha: momo · de-dag-reuse · p:$token" ] \
+    || fail "a secondmate home's child label was not indented two tree levels behind its owner: '$secondmate'"
   FM_HOME="$TMP_ROOT/label-tree-home" bash -c '. "$0/bin/backends/herdr.sh"
     fm_backend_herdr_projection_workspace_label_matches "└ child · p:$1" child "$1" &&
     fm_backend_herdr_projection_workspace_label_matches "  └ child · p:$1" child "$1" &&
@@ -3484,13 +3484,15 @@ test_projection_label_builder_uses_corner_and_strips_owner_prefixes() {
     fm_backend_herdr_projection_workspace_label_matches "└ proj · child · p:$1" child "$1" &&
     fm_backend_herdr_projection_workspace_label_matches "  └ proj · child · p:$1" proj-child "$1" &&
     fm_backend_herdr_projection_workspace_label_matches "    └ proj · child · p:$1" fm-child "$1" &&
+    fm_backend_herdr_projection_workspace_label_matches "    └ alpha: proj · child · p:$1" proj-child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "    └ alpha: proj · other · p:$1" child "$1" &&
     ! fm_backend_herdr_projection_workspace_label_matches "      └ child · p:$1" child "$1" &&
     ! fm_backend_herdr_projection_workspace_label_matches "  └ other · p:$1" child "$1" &&
     ! fm_backend_herdr_projection_workspace_label_matches "  └ proj · other · p:$1" child "$1" &&
     ! fm_backend_herdr_projection_workspace_label_matches "  └  · child · p:$1" child "$1" &&
     ! fm_backend_herdr_projection_workspace_label_matches "  └ proj · child · p:AbCdEfGhIjKlMnOpQrStUw" child "$1"' "$ROOT" "$token" \
-    || fail "child label matching must accept depth 0 to 2 in either body form for the same task and token, and nothing else"
-  pass "herdr presentation labels: └ <project> · <task-short> · p:<full-token>, one level deep under the primary and two under a secondmate home"
+    || fail "child label matching must accept depth 0 to 2 in every body form, with or without an owner, for the same task and token, and nothing else"
+  pass "herdr presentation labels: └ <project> · <task-short> · p:<full-token>, one level deep under the primary and two, behind the owning mate id, under a secondmate home"
 }
 
 # run_tree_order_case <name> <workspaces-json-array> <bash-call>: one ordering
