@@ -272,6 +272,12 @@ fm_role_self_repo() {
     GIT_NO_LAZY_FETCH=1 git -C "$proj" cat-file -e "$c^{commit}" 2>/dev/null && return 0
   done
   if fm_role_shallow "$root" || fm_role_shallow "$proj"; then
+    # Local workaround: a shallow project whose publication host differs from
+    # the code root's publication host is provably another repository.
+    local ph rh
+    ph=$(fm_role_publication_target "$proj"); ph=${ph%%/*}
+    rh=$(fm_role_publication_target "$root"); rh=${rh%%/*}
+    [ -n "$ph" ] && [ -n "$rh" ] && [ "$ph" != "$rh" ] && return 1
     return 2
   fi
   return 1

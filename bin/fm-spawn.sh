@@ -6319,7 +6319,11 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     candidate=""
     last_seen=""
     last_reason="the pane reported no path"
-    for _ in $(seq 1 60); do
+    # FM_SPAWN_TREEHOUSE_WAIT_SECS widens the wait for pools whose `treehouse get`
+    # (fetch plus per-slot status scan) routinely exceeds 60s on a large monorepo.
+    treehouse_wait_secs=${FM_SPAWN_TREEHOUSE_WAIT_SECS:-60}
+    case "$treehouse_wait_secs" in '' | 0* | *[!0-9]*) treehouse_wait_secs=60 ;; esac
+    for _ in $(seq 1 "$treehouse_wait_secs"); do
       p=$(spawn_current_path "$WT_TARGET" || true)
       [ -z "$p" ] || last_seen="$p"
       if [ -n "$p" ] && spawn_worktree_isolated "$p"; then
@@ -6337,7 +6341,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       sleep 1
     done
     if [ -z "$WT" ]; then
-      echo "error: treehouse get did not enter an isolated worktree within 60s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); $(spawn_endpoint_hint)" >&2
+      echo "error: treehouse get did not enter an isolated worktree within ${treehouse_wait_secs}s (last seen '${last_seen:-none}': $last_reason; spawning project '$PROJ_ABS'); $(spawn_endpoint_hint)" >&2
       exit 1
     fi
 
