@@ -266,7 +266,7 @@ PRESU_WS=$(workspace_of_pane "$PRESU_PANE")
 [ "$PRESU_WS" != "$WS_PRIMARY" ] \
   || fail "a projected worker must get its own disposable workspace, not be collapsed into its parent"
 case "$(label_of_workspace "$PRESU_WS")" in
-  "└ "*" · p:"*) : ;;
+  "  └ "*" · p:"*) : ;;
   *) fail "presU's workspace is not a presentation projection: '$(label_of_workspace "$PRESU_WS")'" ;;
 esac
 PRESU_JOURNAL="$PRES_HOME/state/presU.herdr-presentation"
@@ -423,8 +423,8 @@ SM2_PANE=$(grep '^herdr_pane_id=' "$SM2_META" | cut -d= -f2-)
 SM2_WS=$(workspace_of_pane "$SM2_PANE")
 [ "$SM2_WS" != "$WS_PRIMARY_DUP" ] \
   || fail "a --secondmate launch must stand up the secondmate's own workspace, not join the launcher's"
-[ "$(label_of_workspace "$SM2_WS")" = "2ndmate-$SM2_ID" ] \
-  || fail "a --secondmate launch should land in '2ndmate-$SM2_ID', got '$(label_of_workspace "$SM2_WS")'"
+[ "$(label_of_workspace "$SM2_WS")" = "└ 2ndmate-$SM2_ID" ] \
+  || fail "a --secondmate launch should land in '└ 2ndmate-$SM2_ID', got '$(label_of_workspace "$SM2_WS")'"
 pass "real herdr E2E: a --secondmate launch still stands up that secondmate's own workspace instead of inheriting the launcher's"
 
 # --- 8. teardown closes only the worker's own pane --------------------------

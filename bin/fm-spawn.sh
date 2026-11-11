@@ -230,8 +230,8 @@
 #   blocking on a third-party session lock is never the default. The exact
 #   response-derived new workspace is inserted immediately after its owning
 #   parent (firstmate or a secondmate workspace) contiguous child block; a
-#   secondmate home's child label is indented one level
-#   (fm_backend_herdr_projection_workspace_label). Ordering never
+#   child label is indented one tree level under the primary and two under
+#   a secondmate home (fm_backend_herdr_projection_workspace_label). Ordering never
 #   authorizes lifecycle cleanup, and any unavailable, ambiguous, or failed
 #   move warns while the spawn continues.
 #   Every projected create, prune, and move captures and verifies the named
@@ -5351,7 +5351,7 @@ else
             spawn_herdr_presentation_order_lock_release
           else
             HERDR_PROJECTION_ID=$(fm_backend_herdr_projection_journal_create "$STATE" "$ID") || exit 1
-            HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID")
+            HERDR_PROJECTION_LABEL=$(fm_backend_herdr_projection_workspace_label "$ID" "$HERDR_PROJECTION_ID" "$(basename "$PROJ_ABS")")
             if ! FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_create_task \
               "$PROJ_ABS" "$HERDR_PROJECTION_LABEL" "$W"; then
               if [ "${FM_BACKEND_HERDR_PROJECTION_CLEANUP_SAFE:-0}" = 1 ]; then

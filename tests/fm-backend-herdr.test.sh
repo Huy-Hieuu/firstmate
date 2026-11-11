@@ -2307,7 +2307,7 @@ test_projection_journal_v2_binds_and_advances_exact_endpoint() {
     token=$(fm_backend_herdr_projection_journal_create "$1" fm-hibit-r1) || exit 1
     journal="$1/fm-hibit-r1.herdr-presentation"
     home=$(fm_backend_herdr_projection_home_identity "$2") || exit 1
-    label=$(fm_backend_herdr_projection_workspace_label fm-hibit-r1 "$token")
+    label=$(fm_backend_herdr_projection_workspace_label fm-hibit-r1 "$token" hibit)
     fm_backend_herdr_projection_journal_bind \
       "$journal" fm-hibit-r1 "$home" lab-session w2 w2:t2 w2:p2 w1 firstmate "$label" fm-fm-hibit-r1 || exit 1
     fm_backend_herdr_projection_journal_snapshot "$journal" fm-hibit-r1 || exit 1
@@ -2325,7 +2325,7 @@ test_projection_journal_v2_binds_and_advances_exact_endpoint() {
     printf "%s|%s\n" "$FM_BACKEND_HERDR_JOURNAL_TAB_ID" "$FM_BACKEND_HERDR_JOURNAL_PANE_ID"
   ' "$ROOT" "$state" "$home") || fail "version 2 projection journal binding failed"
   token=$(sed -n 's/^projection_id=//p' "$state/fm-hibit-r1.herdr-presentation")
-  [ "$(printf '%s\n' "$out" | sed -n '1p')" = "2|$home_real|w2|w2:t2|w2:p2|w1|└ hibit-r1 · p:$token" ] \
+  [ "$(printf '%s\n' "$out" | sed -n '1p')" = "2|$home_real|w2|w2:t2|w2:p2|w1|  └ hibit · r1 · p:$token" ] \
     || fail "version 2 projection journal did not retain exact home/endpoint/parent binding: $out"
   [ "$(printf '%s\n' "$out" | sed -n '2p')" = "w2:t3|w2:p3" ] \
     || fail "version 2 projection journal did not advance the exact replacement endpoint: $out"
@@ -2362,7 +2362,7 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
       fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
       fm_backend_herdr_projection_focus_restore() { return 0; }
       token=$(fm_backend_herdr_projection_journal_create "$1" task-p2) || exit 1
-      label=$(fm_backend_herdr_projection_workspace_label task-p2 "$token")
+      label=$(fm_backend_herdr_projection_workspace_label task-p2 "$token" proj)
       fm_backend_herdr_projection_create_task /tmp/proj "$label" fm-task-p2 || exit 1
       printf "%s %s %s %s %s\n" \
         "$FM_BACKEND_HERDR_PROJECTION_WORKSPACE_ID" \
@@ -2375,7 +2375,7 @@ test_projection_create_uses_exact_response_ids_and_leaves_one_task_pane() {
   journal="$state/task-p2.herdr-presentation"
   token=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_journal_token "$1" task-p2' "$ROOT" "$journal") \
     || fail "projection journal was not readable"
-  assert_contains "$(cat "$log")" $'workspace\x1fcreate\x1f--cwd\x1f/tmp/proj\x1f--label\x1f└ task-p2 · p:'"$token"$'\x1f--no-focus' \
+  assert_contains "$(cat "$log")" $'workspace\x1fcreate\x1f--cwd\x1f/tmp/proj\x1f--label\x1f  └ proj · task-p2 · p:'"$token"$'\x1f--no-focus' \
     "projection workspace create did not use the corner label, full token, and --no-focus"
   assert_contains "$(cat "$log")" $'tab\x1fcreate\x1f--workspace\x1fw9\x1f--cwd\x1f/tmp/proj\x1f--label\x1ffm-task-p2\x1f--no-focus' \
     "projection task tab did not target the exact new workspace"
@@ -3458,33 +3458,39 @@ test_projection_label_builder_uses_corner_and_strips_owner_prefixes() {
   local primary secondmate token
   token='AbCdEfGhIjKlMnOpQrStUv'
   [ "${#token}" -eq 22 ] || fail "fixture token must be 22 characters"
-  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label task-p2 '"$token" "$ROOT")
-  [ "$primary" = "└ task-p2 · p:$token" ] \
+  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label task-p2 '"$token"' proj' "$ROOT")
+  [ "$primary" = "  └ proj · task-p2 · p:$token" ] \
     || fail "primary child label was wrong: $primary"
-  secondmate=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label secondmate-child-demo '"$token" "$ROOT")
-  [ "$secondmate" = "└ secondmate-child-demo · p:$token" ] \
-    || fail "secondmate child label was wrong: $secondmate"
-  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label firstmate/task-p2 '"$token" "$ROOT")
-  [ "$primary" = "└ task-p2 · p:$token" ] \
+  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label biesoo-learnings-t1 '"$token"' biesoo' "$ROOT")
+  [ "$primary" = "  └ biesoo · learnings-t1 · p:$token" ] \
+    || fail "a leading <project>- was not stripped from the task: $primary"
+  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label firstmate/task-p2 '"$token"' proj' "$ROOT")
+  [ "$primary" = "  └ proj · task-p2 · p:$token" ] \
     || fail "firstmate/ owner prefix was not stripped: $primary"
-  secondmate=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label 2ndmate-fmdev-f2/child '"$token" "$ROOT")
-  [ "$secondmate" = "└ child · p:$token" ] \
-    || fail "2ndmate owner prefix was not stripped: $secondmate"
-  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label fm-task-p2 '"$token" "$ROOT")
-  [ "$primary" = "└ task-p2 · p:$token" ] \
+  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label 2ndmate-fmdev-f2/child '"$token"' proj' "$ROOT")
+  [ "$primary" = "  └ proj · child · p:$token" ] \
+    || fail "2ndmate owner prefix was not stripped: $primary"
+  primary=$(bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label fm-task-p2 '"$token"' proj' "$ROOT")
+  [ "$primary" = "  └ proj · task-p2 · p:$token" ] \
     || fail "presentation fm- owner prefix was not stripped: $primary"
-  case "$primary" in $'└ '*) ;; *) fail "label must start with U+2514 and one space" ;; esac
   mkdir -p "$TMP_ROOT/label-tree-home"; printf 'alpha\n' > "$TMP_ROOT/label-tree-home/.fm-secondmate-home"
-  secondmate=$(FM_HOME="$TMP_ROOT/label-tree-home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label child '"$token" "$ROOT")
-  [ "$secondmate" = "  └ child · p:$token" ] \
-    || fail "a secondmate home's child label was not indented one tree level: '$secondmate'"
+  secondmate=$(FM_HOME="$TMP_ROOT/label-tree-home" bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_workspace_label de-dag-reuse '"$token"' momo' "$ROOT")
+  [ "$secondmate" = "    └ momo · de-dag-reuse · p:$token" ] \
+    || fail "a secondmate home's child label was not indented two tree levels: '$secondmate'"
   FM_HOME="$TMP_ROOT/label-tree-home" bash -c '. "$0/bin/backends/herdr.sh"
     fm_backend_herdr_projection_workspace_label_matches "└ child · p:$1" child "$1" &&
     fm_backend_herdr_projection_workspace_label_matches "  └ child · p:$1" child "$1" &&
-    ! fm_backend_herdr_projection_workspace_label_matches "    └ child · p:$1" child "$1" &&
-    ! fm_backend_herdr_projection_workspace_label_matches "  └ other · p:$1" child "$1"' "$ROOT" "$token" \
-    || fail "child label matching must accept exactly depth 0 and one indent level for the same task and token"
-  pass "herdr presentation labels: └ concise-task · p:<full-token>, indented one level for a secondmate home's children"
+    fm_backend_herdr_projection_workspace_label_matches "    └ child · p:$1" child "$1" &&
+    fm_backend_herdr_projection_workspace_label_matches "└ proj · child · p:$1" child "$1" &&
+    fm_backend_herdr_projection_workspace_label_matches "  └ proj · child · p:$1" proj-child "$1" &&
+    fm_backend_herdr_projection_workspace_label_matches "    └ proj · child · p:$1" fm-child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "      └ child · p:$1" child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "  └ other · p:$1" child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "  └ proj · other · p:$1" child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "  └  · child · p:$1" child "$1" &&
+    ! fm_backend_herdr_projection_workspace_label_matches "  └ proj · child · p:AbCdEfGhIjKlMnOpQrStUw" child "$1"' "$ROOT" "$token" \
+    || fail "child label matching must accept depth 0 to 2 in either body form for the same task and token, and nothing else"
+  pass "herdr presentation labels: └ <project> · <task-short> · p:<full-token>, one level deep under the primary and two under a secondmate home"
 }
 
 # run_tree_order_case <name> <workspaces-json-array> <bash-call>: one ordering
@@ -4015,14 +4021,14 @@ test_projection_reclaim_refusal_matrix_is_non_mutating() {
   token=$(bash -c '
     . "$0/bin/backends/herdr.sh"
     token=$(fm_backend_herdr_projection_journal_create "$1" refusal-r1) || exit 1
-    label=$(fm_backend_herdr_projection_workspace_label refusal-r1 "$token")
+    label=$(fm_backend_herdr_projection_workspace_label refusal-r1 "$token" project)
     fm_backend_herdr_projection_journal_bind \
       "$1/refusal-r1.herdr-presentation" refusal-r1 "$2" fmtest \
       w2 w2:t2 w2:p2 w1 firstmate "$label" fm-refusal-r1 || exit 1
     printf "%s" "$token"
   ' "$ROOT" "$state" "$home_real") || fail "could not create reclaim refusal fixture"
   journal="$state/refusal-r1.herdr-presentation"
-  label="└ refusal-r1 · p:$token"
+  label="  └ project · refusal-r1 · p:$token"
   mkdir -p "$state/legacy"
   bash -c '. "$0/bin/backends/herdr.sh"; fm_backend_herdr_projection_journal_create "$1" refusal-r1 >/dev/null' \
     "$ROOT" "$state/legacy" || fail "could not create legacy reclaim fixture"
@@ -4081,14 +4087,14 @@ test_projection_reclaim_replaces_only_exact_husk_and_advances_binding() {
   token=$(bash -c '
     . "$0/bin/backends/herdr.sh"
     token=$(fm_backend_herdr_projection_journal_create "$1" fm-hibit-r1) || exit 1
-    label=$(fm_backend_herdr_projection_workspace_label fm-hibit-r1 "$token")
+    label=$(fm_backend_herdr_projection_workspace_label fm-hibit-r1 "$token" hibit)
     fm_backend_herdr_projection_journal_bind \
       "$1/fm-hibit-r1.herdr-presentation" fm-hibit-r1 "$2" fmtest \
       w2 w2:t2 w2:p2 w1 firstmate "$label" fm-fm-hibit-r1 || exit 1
     printf "%s" "$token"
   ' "$ROOT" "$state" "$home_real") || fail "could not create exact reclaim journal fixture"
   journal="$state/fm-hibit-r1.herdr-presentation"
-  label="└ hibit-r1 · p:$token"
+  label="  └ hibit · r1 · p:$token"
   printf '%s\n' "{\"result\":{\"workspaces\":[{\"workspace_id\":\"w0\",\"label\":\"firstmate\",\"focused\":false,\"active_tab_id\":\"w0:t1\"},{\"workspace_id\":\"w1\",\"label\":\"firstmate\",\"focused\":true,\"active_tab_id\":\"w1:t1\"},{\"workspace_id\":\"w2\",\"label\":\"$label\",\"focused\":false,\"active_tab_id\":\"w2:t2\"}]}}" > "$resp/1.out"
   printf '%s\n' '{"result":{"tabs":[{"tab_id":"w2:t2","label":"fm-fm-hibit-r1"}]}}' > "$resp/2.out"
   printf '%s\n' '{"result":{"panes":[{"pane_id":"w2:p2","tab_id":"w2:t2"}]}}' > "$resp/3.out"

@@ -119,18 +119,20 @@ The sidebar reads as a tree: `firstmate`, then its own workers, then each second
 
 ```text
 firstmate
-└ fix-login · p:<token>
+  └ shop · fix-login · p:<token>
 └ 2ndmate-web
-  └ web-audit · p:<token>
+    └ web · audit · p:<token>
 └ 2ndmate-data
 ```
 
 - A `--secondmate` launch that creates the mate's workspace labels it `└ 2ndmate-<id>` and moves it once to sit after the launcher's own workspace and the tree entries already under it, so mates keep their launch order.
   The launcher's workspace is resolved from its own Herdr identity, or from the unique `firstmate` workspace when the launcher runs outside Herdr.
-- A projected worker started from a secondmate home is indented one level, `  └ <task> · p:<token>`, so it reads as that mate's child.
+- A projected worker's label is `└ <project> · <task-short> · p:<token>`, where `<project>` is the task's project directory name and `<task-short>` is the task id without a leading `<project>-`.
+- A worker started from the primary home is indented one level, and one started from a secondmate home two levels, so each reads as its parent's child; one level is two spaces, which Herdr keeps verbatim at the start of a workspace label.
+- The `p:<token>` suffix stays because token lookups and [startup cleanup](#startup-cleanup-of-restored-projections) find a workspace by it when no task metadata survives.
 - Placement uses the same verified `workspace.move` path, presentation-order lock, and focus restore as [Ordering](#ordering), moves only the new mate workspace, and never fails the spawn: any unavailable, ambiguous, or failed step leaves the mate where Herdr created it with a warning.
 - An existing mate workspace is never moved or renamed, so a mate launched before this keeps its flat `2ndmate-<id>` label until its workspace is next recreated.
-- Labels and indentation stay presentation only; recorded ids remain the endpoint authority, and journals, recovery, and startup cleanup accept a worker label at either depth.
+- Labels and indentation stay presentation only; recorded ids remain the endpoint authority, and journals, recovery, and startup cleanup accept a worker label at depth 0, 1, or 2 and in the older `└ <task> · p:<token>` form, so a workspace created before is never renamed.
 
 The agents list names each agent's workspace in its first row once the [Sidebar rows](#sidebar-rows) are applied, so a mate and its workers read by name rather than only by group tokens.
 
@@ -439,7 +441,7 @@ Locked session start has one narrower cleanup for a restored projected child tha
 It runs only when the current home has at least one ordinary presentation journal, and it considers only that home.
 A primary never recursively sweeps a secondmate home.
 
-Discovery starts from the exact current `└ <concise-task> · p:<22-character-token>` grammar, at either tree depth, but a title or token alone is never mutation authority.
+Discovery starts from the exact `└ <body> · p:<22-character-token>` grammar, at any tree depth, but a title or token alone is never mutation authority.
 A candidate must meet all of these conditions:
 
 - The title must contain exactly one token occurrence across the named-session snapshot.
@@ -620,8 +622,7 @@ Firstmate never edits Herdr's configuration on its own.
 ```toml
 [ui.sidebar.spaces]
 rows = [
-  ["state_icon", "workspace"],
-  [{ token = "$fm_group", bold = true }, "$fm_state"],
+  ["state_icon", "workspace", "$fm_state"],
 ]
 
 [ui.sidebar.agents]
@@ -631,8 +632,9 @@ rows = [
 ]
 ```
 
+A projected worker's workspace label already names its project ([Hierarchy tree](#hierarchy-tree)), so the spaces row adds only the status beside it.
 The first agents row names the agent's workspace, so `firstmate`, each `└ 2ndmate-<id>`, and each worker read by name even when a task carries no group token.
-`herdr config check` accepts these rows on Herdr 0.9.3.
+`herdr config check` accepts these rows on Herdr 0.9.5.
 Run `herdr server reload-config` afterwards to apply them.
 Colors can be added with Herdr's inline token styles.
 

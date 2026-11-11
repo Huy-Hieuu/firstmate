@@ -462,10 +462,10 @@ sidebar_rows() {
   cat <<'EOF'
 
 # Firstmate project groups (docs/herdr-backend.md "Project groups").
+# A worker's workspace label already names its project.
 [ui.sidebar.spaces]
 rows = [
-  ["state_icon", "workspace"],
-  [{ token = "$fm_group", bold = true }, "$fm_state"],
+  ["state_icon", "workspace", "$fm_state"],
 ]
 
 # The first agents row names the workspace, so an agent whose project has no

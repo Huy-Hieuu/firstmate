@@ -306,6 +306,8 @@ test_sidebar_config_apply_backs_up_and_refuses_twice() {
   printf '[ui]\nagent_panel_sort = "spaces"\n' > "$cfg"
   out=$(groups sidebar-config 2>&1) || fail "sidebar-config print failed: $out"
   assert_contains "$out" '[ui.sidebar.agents]' "printed rows"
+  assert_contains "$out" '["state_icon", "workspace", "$fm_state"],' "one-line spaces row"
+  assert_not_contains "$out" '[{ token = "$fm_group", bold = true }, "$fm_state"],' "no second spaces row"
   assert_equals "" "$(cat "$FAKE_HERDR_LOG")" "printing the rows calls no Herdr command"
   out=$(groups sidebar-config --apply "$cfg" 2>&1) || fail "sidebar-config apply failed: $out"
   backups=$(find "$FAKE_DIR" -maxdepth 1 -name 'config.toml.bak-*')
