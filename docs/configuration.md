@@ -15,6 +15,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Review bots on owned GitHub pull requests | [Contribution review bots](#contribution-review-bots-configcontribution-review-bots) |
 | Stopping idle workers while a PR awaits review, and cleanup on merge | [Park on review](#park-on-review) |
+| Phone pushes, quiet hours, reachability, routine owner, untrusted records, and goals | [Captain push, quiet hours, and routine foundations](#captain-push-quiet-hours-and-routine-foundations) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -100,6 +101,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences.
 - Learnings, backlog, briefs, scout reports, optional task status archives, and the optional per-task no-mistakes pipeline-spend ledger.
+- The captain's optional goals and the shared routine-owner lease under `data/routines/`.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
 `state/` holds runtime records:
@@ -113,6 +115,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Private secondmate config-reread generations with their retry and quarantine state.
 - Per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`).
 - Parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
+- Push stretches and held quiet-time notices under `state/notify/`, and cached reachability verdicts under `state/reach/`.
 
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`.
 
@@ -733,6 +736,77 @@ An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisel
 
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) for active evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
+
+## Captain push, quiet hours, and routine foundations
+
+These local pieces serve captain-registered routines and captain-facing pushes.
+Each script's header and `--help` own its exact fields, exit codes, and test overrides.
+
+### Phone push (config/notify)
+
+[`bin/fm-notify.sh`](../bin/fm-notify.sh) pushes one captain-facing notice, `needs-you` or `fyi`, with a title, an optional short body, and an optional link.
+Only firstmate invokes it; a worker or secondmate is refused.
+A notice carries metadata only, never secrets, credentials, or text copied from mail or chat.
+Each notice names a cause key and is delivered once per stretch: a repeat stays silent until `fm-notify.sh clear <key>` records that the cause cleared.
+
+The optional local, gitignored `config/notify` uses the `config/wedge-alarm` directive shape, one per non-empty, non-comment line:
+
+- `command:<cmd>` runs `<cmd>` through `sh -c` with level, title, body, and URL as `$1` through `$4`.
+- `off` disables every channel.
+
+No file, an empty file, or `off` makes every push a no-op that prints one notice.
+Firstmate does not choose a push service.
+For example, with an [ntfy](https://ntfy.sh) topic the captain created and subscribed to on the phone:
+
+```text
+command:curl -fsS -H "Title: $2" -H "Priority: $([ "$1" = needs-you ] && echo high || echo default)" ${4:+-H "Click: $4"} -d "$3" https://ntfy.sh/<private-topic>
+```
+
+Anyone who knows an ntfy topic name can read it, so pick an unguessable topic or a self-hosted server with access control.
+
+### Quiet hours (config/quiet-hours)
+
+During quiet time `fm-notify.sh` holds `fyi` notices and delivers them later as one summary, while `needs-you` notices always deliver.
+Quiet time is any window in the optional local, gitignored `config/quiet-hours`, or this home's `/quiet` mode.
+Each non-empty, non-comment line is `[<days>] HH:MM-HH:MM`, where `<days>` is a comma list of `mon` through `sun` naming the day a window starts:
+
+```text
+22:00-07:30
+sat,sun 00:00-24:00
+```
+
+Held notices flush on the next delivery outside quiet time or on `fm-notify.sh flush`.
+
+### Reachability (config/reach)
+
+[`bin/fm-reach.sh`](../bin/fm-reach.sh) classifies a named target as `reachable` or `unreachable` with one short request per URL and a 60-second cached verdict.
+A probe that needs a VPN-bound or VPN-blocked host checks it first and defers on `unreachable` instead of reporting a failure.
+`github` is built in; the optional local, gitignored `config/reach` adds targets as `<name> <url> [<url>...]`, for example `momo https://gerrit.mservice.io https://jenkins.mservice.io`.
+
+### Routine owner (data/routines/owner)
+
+When two machines share one `data/`, only the machine holding the routine-owner lease runs scheduled routines.
+[`bin/fm-routine-owner.sh`](../bin/fm-routine-owner.sh) keeps the lease in the shared `data/routines/owner` record, refreshed by the owner and claimable by another machine once it is two hours stale or by an explicit `claim --force` handover.
+
+### Untrusted records
+
+Text from mail, calendars, tickets, chat, and marketplaces passes through [`bin/fm-records.sh wrap <source>`](../bin/fm-records.sh) before any model reads it.
+The wrapper fences the text as untrusted data and removes characters and markers that could hide instructions or forge the fence.
+Nothing from such a source persists into captain preferences, learnings, or other memory without the captain's approval.
+
+### Captain goals (data/goals.md)
+
+The optional private `data/goals.md` records the captain's goals; only the captain writes them, and firstmate never invents them.
+Each `## ` heading names a life or work area, and each top-level `- ` or `* ` bullet under it is one goal; other lines are free prose.
+
+```markdown
+# Goals
+
+## <Area, for example a day job or side income>
+- <Goal, optionally with a target date>
+```
+
+[`bin/fm-goals.sh`](../bin/fm-goals.sh) prints one `<area><TAB><goal>` line per goal for briefs, reviews, and dispatch notes to cite.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 

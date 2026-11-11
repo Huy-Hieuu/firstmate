@@ -427,6 +427,7 @@ Never infer an override, broaden its scope, apply it by analogy, carry it to ano
 Ambiguous scope or conflict still requires one concise clarification before action.
 Destructive, irreversible, security-sensitive, discard, and merge actions still require the captain to state that concrete action explicitly; once the captain does so and higher-priority instructions permit it, a conflicting Firstmate-written rule must not rigidly block the action.
 Standing `yolo` merge authority is not a substitute for a current explicit captain instruction where an explicit action is required.
+A routine the captain registered, or approved when firstmate proposed it, is a standing captain instruction scoped to its declared read and draft actions and pausable as a captain hold; it never authorizes a send, merge, PROD change, trade, or submission, which still need the captain's explicit word.
 
 ## Maintaining this file
 
