@@ -15,7 +15,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Review bots on owned GitHub pull requests | [Contribution review bots](#contribution-review-bots-configcontribution-review-bots) |
 | Stopping idle workers while a PR awaits review, and cleanup on merge | [Park on review](#park-on-review) |
-| Phone pushes, quiet hours, reachability, routine owner, untrusted records, and goals | [Captain push, quiet hours, and routine foundations](#captain-push-quiet-hours-and-routine-foundations) |
+| Phone pushes, quiet hours, reachability, routine owner, routines, untrusted records, and goals | [Captain push, quiet hours, and routine foundations](#captain-push-quiet-hours-and-routine-foundations) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -101,7 +101,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences.
 - Learnings, backlog, briefs, scout reports, optional task status archives, and the optional per-task no-mistakes pipeline-spend ledger.
-- The captain's optional goals and the shared routine-owner lease under `data/routines/`.
+- The captain's optional goals, the shared routine-owner lease, and routine definitions under `data/routines/`.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
 `state/` holds runtime records:
@@ -115,7 +115,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Private secondmate config-reread generations with their retry and quarantine state.
 - Per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`).
 - Parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
-- Push stretches and held quiet-time notices under `state/notify/`, and cached reachability verdicts under `state/reach/`.
+- Push stretches and held quiet-time notices under `state/notify/`, cached reachability verdicts under `state/reach/`, and routine cursors and pacing under `state/routines/`.
 
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`.
 
@@ -807,6 +807,35 @@ Each `## ` heading names a life or work area, and each top-level `- ` or `* ` bu
 ```
 
 [`bin/fm-goals.sh`](../bin/fm-goals.sh) prints one `<area><TAB><goal>` line per goal for briefs, reviews, and dispatch notes to cite.
+
+### Routines (data/routines/)
+
+A routine is a captain-registered schedule plus a shell probe, so firstmate watches a source on a timer and spends no model tokens on a tick with nothing new.
+[`bin/fm-routine.sh`](../bin/fm-routine.sh) owns the exact fields, probe contract, pacing defaults, and state files; its header and `--help` are the reference.
+
+Each routine is one private file, `data/routines/<id>.routine`, of `key=value` lines:
+
+- `schedule=` is `every <N>m`, `every <N>h`, `daily HH:MM`, `weekdays HH:MM`, or a `mon,...,sun` list with `HH:MM`, in local wall-clock time.
+- `probe=` is a read-only command that prints one line per item new since its cursor, or nothing.
+- Optional `reach=` names [`fm-reach.sh`](../bin/fm-reach.sh) targets; while one is unreachable the run is deferred, not failed.
+- Optional `min_interval=` is the pacing floor in seconds between probe runs, and optional `action=` is the one-line instruction firstmate follows when items arrive.
+
+`fm-routine.sh arm` writes and registers the one standing watcher check, `state/routines.check.sh`, which runs every due routine on the watcher's check sweep, only on the machine holding the routine-owner lease.
+A run with new items queues one `check: routine <id>` wake, and `fm-routine.sh show <id>` prints the items fenced as untrusted records.
+The probe's cursor commits only after that wake is acknowledged, so an unhandled or lost wake re-presents the same items rather than dropping them.
+A failing probe keeps its cursor and backs off exponentially to a bounded delay, and one wake reports a probe that keeps failing.
+A daily run missed by less than 12 hours runs once late; an older one is recorded as missed.
+`list`, `pause <id>`, `resume <id>`, and `run-now <id>` inspect and steer routines, and `disarm` removes the standing check.
+
+This example is not enabled until its file exists and the check is armed:
+
+```text
+# data/routines/gh-review.routine
+schedule=every 30m
+reach=github
+probe=since=${FM_ROUTINE_CURSOR:-1970-01-01T00:00:00Z}; date -u +%Y-%m-%dT%H:%M:%SZ > "$FM_ROUTINE_CURSOR_OUT"; gh search prs --review-requested=@me --state=open --updated=">$since" --json url --jq '.[].url'
+action=Tell the captain which pull requests newly await his review.
+```
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 
