@@ -173,6 +173,15 @@ if [ "${QUOTA_AXI_SLOW_FIRST:-0}" = 1 ]; then
   printf '{"schemaVersion":5,"providers":[{"provider":"codex","quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":20,"runway":{"status":"through_reset"}},{"scope":"model:codex_bengalfox","status":"known","effectivePercentRemaining":%s,"runway":{"status":"%s"}}]}}]}\n' "$model_remaining" "$runway"
   exit 0
 fi
+# Limit stretch: exhausted, then healthy, then exhausted again.
+if [ "${QUOTA_AXI_STRETCH:-0}" = 1 ]; then
+  case "$count" in
+    2) remaining=20; runway=through_reset ;;
+    *) remaining=0; runway=exhausted_now ;;
+  esac
+  printf '{"schemaVersion":5,"providers":[{"provider":"codex","quotaSemantics":{"status":"known","effectiveAvailability":[{"scope":"all_models","status":"known","effectivePercentRemaining":%s,"runway":{"status":"%s"}}]}}]}\n' "$remaining" "$runway"
+  exit 0
+fi
 if [ "$count" -eq 1 ]; then
   model_remaining=20
   runway=through_reset
@@ -495,5 +504,16 @@ printf '%s\n' "$out" | grep -Fq 'incompatible' \
 [ "$(cat "$VERSION_COUNT")" = 4 ] \
   || fail "expected exactly four version launches across the slow streak, got $(cat "$VERSION_COUNT" 2>/dev/null)"
 ok "later slow version probe reports timeout not incompatible"
+
+# A watch re-armed inside the stretch it already reported stays silent until a
+# healthy read ends that stretch, then fires on the next exhaustion.
+rm -f "$COUNT"
+printf 'exhausted\n' > "$LAB/stretch"
+out=$(QUOTA_AXI_STRETCH=1 QUOTA_AXI_COUNT="$COUNT" PATH="$FAKEBIN:$PATH" "$BIN/fm-procevent-quota.sh" poll \
+  --interval 0.01 --threshold 10 --provider codex --timeout 1 --stretch-file "$LAB/stretch")
+printf '%s\n' "$out" | grep -qx 'status: exhausted' || fail "stretch watch did not fire after the stretch ended: $out"
+printf '%s\n' "$out" | grep -qx 'condition_polls: 3' || fail "stretch watch re-fired inside the reported stretch: $out"
+[ "$(cat "$LAB/stretch")" = exhausted ] || fail "stretch watch did not record the new stretch"
+ok "quota watch fires once per limit stretch"
 
 printf '# all fm-procevent-quota tests passed\n'

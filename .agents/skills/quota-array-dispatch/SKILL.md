@@ -126,6 +126,7 @@ Read `runway` from the `quota[]` row: `through_reset` passes this generic feasib
 A high `spendPriority` on a nearly empty window that will exhaust soon must not route into a mid-task stall.
 Unknown or unmeasurable runway stays eligible with disclosed uncertainty and is never assumed to pass.
 Do not invent a generic percentage floor, and honor an explicit captain floor for a candidate when one exists.
+Never fail over onto paid usage the captain did not choose: a candidate whose only remaining headroom is pay-as-you-go extra usage beyond its plan windows fails this floor unless the captain opted that account into paid usage.
 
 ## Rank by spendPriority
 

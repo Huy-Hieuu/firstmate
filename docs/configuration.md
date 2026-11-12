@@ -16,6 +16,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Review bots on owned GitHub pull requests | [Contribution review bots](#contribution-review-bots-configcontribution-review-bots) |
 | Stopping idle workers while a PR awaits review, and cleanup on merge | [Park on review](#park-on-review) |
 | Phone pushes, quiet hours, reachability, routine owner, routines, daily brief, untrusted records, and goals | [Captain push, quiet hours, and routine foundations](#captain-push-quiet-hours-and-routine-foundations) |
+| Incident retries, decision log, friction sentinel, loop guard, and quota stretches | [Reliability and audit records](#reliability-and-audit-records) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -102,6 +103,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Captain preferences and optional shared captain preferences.
 - Learnings, backlog, briefs, scout reports, optional task status archives, and the optional per-task no-mistakes pipeline-spend ledger.
 - The captain's optional goals, the shared routine-owner lease, routine definitions under `data/routines/`, daily briefs under `data/brief/`, and the brief's value ledger `data/value.jsonl`.
+- The decision log `data/decisions.jsonl` and the friction record `data/friction.jsonl`.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
 `state/` holds runtime records:
@@ -116,6 +118,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`).
 - Parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 - Push stretches and held quiet-time notices under `state/notify/`, cached reachability verdicts under `state/reach/`, routine cursors and pacing under `state/routines/`, and daily brief source rows under `state/brief/`.
+- The incident ledger `state/incidents.jsonl`, friction-scan offsets and loop-guard streaks under `state/friction/`, and quota-watch limit stretches in `state/.procevent-<source-id>.stretch`.
 
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`.
 
@@ -877,6 +880,39 @@ probe=bin/fm-daily-brief.sh source calendar >/dev/null
 schedule=every 1h
 probe=bin/fm-daily-brief.sh source toolchain >/dev/null
 ```
+
+## Reliability and audit records
+
+These records keep unattended recovery bounded and auditable.
+Each script's header and `--help` own its exact fields, verdicts, thresholds, and test overrides.
+
+### Incident ledger and one automatic retry
+
+Before relaunching a stuck, dead, or wedged worker, firstmate runs [`bin/fm-incident.sh record <task> <cause>`](../bin/fm-incident.sh) and follows its verdict.
+The verdict order is: a cause only the captain can fix (`--captain`) goes to the captain with no relaunch; a visible outward action (a recorded PR, a pull request, merge request, or Gerrit change URL in the status log, or `--outward`) is never rerun; more than 5 incidents for the task in an hour are muted; after 2 retries in an hour the failure is escalated; otherwise the worker is relaunched once with a note to check what it already did.
+The ledger is `state/incidents.jsonl`, and `fm-incident.sh list [<task>]` shows the last day.
+
+### Decision log (data/decisions.jsonl)
+
+[`bin/fm-decision-log.sh`](../bin/fm-decision-log.sh) keeps one line per captain decision and per autonomous firstmate action: date, item, action, choice, source channel, actor, authorizing rule, and whether the captain was away.
+A row names its backlog item instead of copying it; the captain-held task keeps the exact words.
+Every newly recorded captain answer through `bin/fm-captain-hold.sh` and every automatic retry adds a row on its own, and firstmate adds rows for other routine-driven actions with `fm-decision-log.sh add`.
+Read it with `fm-decision-log.sh list [--item <id>] [--since YYYY-MM-DD]`.
+
+### Friction sentinel and loop guard
+
+[`bin/fm-friction.sh arm`](../bin/fm-friction.sh) registers one watcher check per home; arm it in each home, including each secondmate home, because the check reads only that home's own logs.
+On every check sweep the loop guard compares delivered wakes after normalizing away timestamps, message numbers, URLs, and paths, and wakes firstmate once with a `loop guard:` check line when the same wake repeats 5 times without a two-hour gap.
+Declared paused waits, heartbeats, and signals never count.
+A loop-guard wake means stop repeating the step: find the cause, using `bin/fm-reach.sh` when a host may be unreachable behind a VPN, then steer one corrective note, pause the source, or hold it for the captain.
+Once a day the same check scans blocked and failed status lines, non-exempt wakes, and watcher errors into `data/friction.jsonl`, one row per normalized signature with its count and the firstmate turns it cost.
+`fm-friction.sh top [<n>]` prints the most frequent signatures; a recurring firstmate bug among them becomes a local issue draft under the `firstmate-self-repo` role gate.
+`fm-friction.sh disarm` removes the check.
+
+### Quota limit stretches
+
+A quota watch from `bin/fm-procevent-quota.sh arm` reports each limit stretch once: re-armed while the same low or exhausted status persists, it stays silent until a healthy read ends the stretch, and it still reports a move from low to exhausted.
+The Claude usage warner (`bin/fm-usage-warner.sh`) already warns once per threshold crossing.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 

@@ -862,6 +862,11 @@ test_answer_records_and_closes() {
     "the answered task did not record the captain decision text"
   run_captain "$home" answer sample-guard-call --decision-file "$home/guard-decision.txt" >/dev/null \
     || fail "identical answer retry was not idempotent"
+  assert_equals 1 "$(grep -c '"item":"sample-guard-call"' "$home/data/decisions.jsonl")" \
+    "an answer and its idempotent retry must log exactly one decision"
+  assert_contains "$(FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-decision-log.sh" list --item sample-guard-call)" \
+    "sample-guard-call captain/answered: Captain chose the guard option. (via chat)" \
+    "the decision log does not show the captain's answer"
   printf 'Captain chose something else entirely.\n' > "$home/drifted.txt"
   if run_captain "$home" answer sample-guard-call --decision-file "$home/drifted.txt" \
     > "$home/drifted-answer.out" 2> "$home/drifted-answer.err"; then
@@ -935,6 +940,9 @@ EOF
   assert_contains "$show" "held: no" "an empty-label release did not lift the hold"
   assert_contains "$show" "Resolution mode: released" \
     "an empty-label release recorded the wrong close mode"
+  assert_contains "$(FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" "$ROOT/bin/fm-decision-log.sh" list --item sample-empty-label-widget)" \
+    "sample-empty-label-widget captain/released: go (via empty-label release fixture)" \
+    "the decision log does not show the keyed answer, its channel, and its close mode"
 
   # A NEW captain gate on the same task later takes a NEW answer.
   FM_CAPTAIN_HOLD_NOW=2026-07-14T12:00:00Z run_captain "$home" hold sample-widget \

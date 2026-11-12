@@ -38,7 +38,8 @@ An unmatched unmerged closure remains an open question and arrives as a contribu
 Read that fact before presenting the remaining choice, rather than asking whether to merge the closed PR.
 The script's help owns policy registration, supported events, and retry mechanics.
 
-When recording a captain answer, preserve what he actually said: `bin/fm-captain-hold.sh answer` writes his exact words into the task and closes a question-shaped call, while `--release` frees a captain-gated work item to proceed.
+Never close anything the captain owns without recording what he actually said: `bin/fm-captain-hold.sh answer` writes his exact words into the task and closes a question-shaped call, while `--release` frees a captain-gated work item to proceed.
+Each newly recorded answer also lands as one line in the decision log; before asking the captain a call again, check `bin/fm-decision-log.sh list --item <id>` for what he already decided ([`docs/configuration.md`](../../../docs/configuration.md#decision-log-datadecisionsjsonl)).
 A merge approval uses that existing release path because approval permits the merge to proceed; cleanup closes the work only after it lands and records what shipped.
 Closing a held row at merge approval instead records completion before landing, so the backlog claims completion before the work actually ships.
 When the answer changes what a task must build, follow `AGENTS.md` section 7's mid-task ask rule to preserve the captain's words in the brief and steer the worker.
