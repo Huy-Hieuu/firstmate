@@ -16,7 +16,7 @@
 # keeps the previous rows, and the brief shows them with their age. Row fields
 # the brief reads:
 #   id, title, url          every row
-#   section                 needs | day | radar | inbox | waiting | owe
+#   section                 needs | day | radar | inbox | waiting | owe | ideas
 #                           (default radar); any other section is kept for the
 #                           source's own use and never shown
 #   push                    needs rows: push title used instead of the title,
@@ -32,8 +32,10 @@
 # decisions, recorded PRs, source rows marked needs, failing routines), Your day
 # (meetings, clashes, join links, a prep card for each meeting with other people
 # starting within 4h), Work radar, Inbox (the mail source's inbox rows),
-# Waiting on others, You owe, Fleet, and Routines. Third-party text in it
-# (ticket, meeting, and mail titles) is untrusted; `show` fences it.
+# Waiting on others, You owe, Fleet, Ideas and memory (rows marked ideas from a
+# source fetched within the last day, such as the nightly dream, shown only
+# when there are some), and Routines. Third-party text in it (ticket, meeting,
+# and mail titles) is untrusted; `show` fences it.
 #   Notify on new rows: each Needs you row has a key; a key not seen in the
 #   previous compose gets one needs-you push through bin/fm-notify.sh, and a key
 #   that disappears ends its push stretch, so an unchanged row never pushes
@@ -215,7 +217,7 @@ def age($at): if $at == null then "never fetched"
       "- Next step: " + (if (.related | length) > 0 then "review the open items above before the call." else "skim the invite and agenda." end)),
     "",
     "## Work radar",
-    ([ $sources | to_entries[] | select(.key as $k | ["calendar", "toolchain", "mail", "followups", "upwork"] | index($k) | not) ] as $work
+    ([ $sources | to_entries[] | select(.key as $k | ["calendar", "toolchain", "mail", "followups", "upwork", "dream"] | index($k) | not) ] as $work
      | if ($work | length) == 0 then "- No work sources yet." else
        ($work[] | [.value.rows[] | select((.section // "radar") == "radar")] as $r
         | "- " + .key + ": \($r | length) item(s), " + age(.value.at),
@@ -243,6 +245,9 @@ def age($at): if $at == null then "never fetched"
       (($snap.in_flight // [])[:12][] | "  - " + (.name | one) + " (" + (.repo // "" | tostring) + "): " + (.doing // .state // "" | one)),
       (if (($snap.landed // []) | length) > 0 then "- Recently landed:", (($snap.landed // [])[:6][] | "  - " + (.what | one)) else empty end)
     end),
+    ([ $sources[] | select($now - (.at // 0) < 86400) | .rows[] | select(.section == "ideas") ] as $ideas
+     | if ($ideas | length) == 0 then empty else
+       "", "## Ideas and memory", ($ideas[:12][] | "- " + (.title // .id | one) + link) end),
     "",
     "## Routines",
     (if ($routines | length) == 0 then "- No routines registered." else
