@@ -90,6 +90,7 @@ data/                personal fleet records; LOCAL, gitignored as a whole
   <id>/status.log <id>/status.<N>.log <id>/children/<child>/...  optional teardown archives; see docs/architecture.md "Task status archives"
   pipeline-spend.jsonl  optional per-task no-mistakes pipeline spend, written only when config/pipeline-spend is present; bin/fm-pipeline-spend.sh owns the schema
   brief/<YYYY-MM-DD>.md  the daily brief, rewritten in place by bin/fm-daily-brief.sh compose; value.jsonl  the brief's value ledger of things done for the captain (same owner)
+  waiting.md drafts/  follow-ups the captain awaits or owes and local reply drafts that are never sent; bin/fm-followups.sh owns the formats
 projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
 state/               runtime records and signals; gitignored
   <id>.status        append-only wake events, not current-state truth; bin/fm-classify-lib.sh owns their syntax
@@ -135,7 +136,7 @@ state/               runtime records and signals; gitignored
   mail.check.sh      generated received-mail poll shim and its .check-trust binding; present only after bin/fm-mail-check.sh arm; report record .mail-check (mail schema: docs/configuration.md "Mail plane")
   usage-warner.check.sh  generated Claude usage threshold poll shim and its .check-trust binding; present only after bin/fm-usage-warner.sh arm; its de-dupe record .usage-warner is what keeps one threshold crossing from warning on every poll, and .usage-warner.lock serializes overlapping checks
   routines.check.sh  generated routine scheduler tick shim and its .check-trust binding; present only after bin/fm-routine.sh arm; per-routine cursors, pending batches, and pacing live under routines/ (bin/fm-routine.sh owns the formats)
-  brief/ last-active  daily brief source rows, push bookkeeping, and the captain's last-seen time for brief surfacing; bin/fm-daily-brief.sh owns the formats
+  brief/ last-active  daily brief source rows, push bookkeeping, and the captain's last-seen time for brief surfacing; bin/fm-daily-brief.sh owns the formats; brief/mail-triage  firstmate's mail sorting calls (bin/fm-followups.sh)
   .mail-seen .mail-woken .mail-retry .mail-retry-pos .mail-turn .mail-seen.lock  mail-plane poll cursor, emission journal, transient-fetch retry set, retry-scan position, contended-slot turn flag, and overlapping-poll lock; written only by bin/fm-mail.sh (mail schema: docs/configuration.md "Mail plane")
   startup-growth.check.sh  generated daily startup-growth poll shim and its .check-trust binding; present only after bin/fm-startup-growth-check.sh arm; its record .startup-growth-check holds the daily gate, the per-file growth baselines, and the last reported finding set, so removing it re-baselines growth silently and repeats a standing finding such as a budget overrun once (docs/configuration.md "Daily startup growth check")
   pr-health.check.sh  generated owned-PR health poll shim and its .check-trust binding; present only after bin/fm-pr-health.sh arm, which config/pr-health-monitor gates (docs/configuration.md "PR health monitor")

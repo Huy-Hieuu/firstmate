@@ -8,12 +8,16 @@
 #                          poll, bounded to uids this home has not surfaced,
 #                          plus a retry-set of previously unfetchable uids;
 #                          persists the retry-scan position and cap-1 turn flag.
+#   recent                 Emit recent INBOX and Sent mail as JSON lines for
+#                          the daily brief's mail source (cmd_recent).
 #   seen <cursor>          Print a cursor file (used by `status`).
 #
 # All configuration arrives through the environment, never through arguments,
 # so credentials never appear in argv or logs. read/poll use BODY.PEEK so mail
 # is never marked seen before firstmate answers it.
+import datetime
 import imaplib
+import json
 import os
 import re
 import socket
@@ -23,7 +27,7 @@ import email
 import smtplib
 from email.header import decode_header, make_header
 from email.message import EmailMessage
-from email.utils import formatdate
+from email.utils import formatdate, parseaddr, parsedate_to_datetime
 
 USER = os.environ['FM_MAIL_USER']
 PW = os.environ['FM_MAIL_PASS']
@@ -472,6 +476,134 @@ def cmd_poll_list():
                 pass
 
 
+RECENT_BODY_MAX = 1048576
+
+
+def own_text(msg, limit):
+    """The message's own plain text: quoted lines and the quoted tail of a
+    reply are dropped so only what the writer wrote remains."""
+    kept = []
+    for line in body_preview(msg).splitlines():
+        s = line.strip()
+        if s.startswith('>'):
+            continue
+        if s.startswith('-----Original Message'):
+            break
+        if s.endswith('wrote:'):
+            if s.startswith('On '):
+                break
+            if kept and kept[-1].strip().startswith('On '):
+                kept.pop()
+                break
+        kept.append(line.rstrip())
+    return '\n'.join(kept).strip()[:limit]
+
+
+def recent_box(m, box, folder, since, limit, text_limit):
+    """Rows for the newest <limit> messages of <box> since <since>, read with
+    EXAMINE and BODY.PEEK so nothing is ever marked seen or changed."""
+    typ, _ = m.select(box, readonly=True)
+    if typ != 'OK':
+        return None
+    _, uv = m.response('UIDVALIDITY')
+    uidv = clean(uv[-1].decode()) if uv and uv[-1] else ''
+    typ, data = m.uid('search', None, 'SINCE', since)
+    uids = (data[0] or b'').split()[-limit:] if typ == 'OK' and data else []
+    if not uids:
+        return []
+    meta = {}
+    typ, data = m.uid('fetch', b','.join(uids), '(UID FLAGS RFC822.SIZE)')
+    for item in data or []:
+        raw = item[0] if isinstance(item, tuple) else item
+        if not isinstance(raw, bytes):
+            continue
+        mu = re.search(rb'UID (\d+)', raw)
+        if mu:
+            ms = re.search(rb'RFC822\.SIZE (\d+)', raw)
+            mf = re.search(rb'FLAGS \(([^)]*)\)', raw)
+            meta[mu.group(1)] = (int(ms.group(1)) if ms else 0, (mf.group(1) if mf else b'').lower())
+    rows = []
+    for u in uids:
+        size, flags = meta.get(u, (0, b''))
+        part = 'BODY.PEEK[]' if size <= RECENT_BODY_MAX else 'BODY.PEEK[HEADER]'
+        try:
+            typ, msg = m.uid('fetch', u, '(%s)' % part)
+            if typ != 'OK' or not msg or not isinstance(msg[0], tuple):
+                continue
+            mi = email.message_from_bytes(msg[0][1])
+        except (imaplib.IMAP4.error, ValueError):
+            continue
+        try:
+            ts = int(parsedate_to_datetime(mi.get('Date')).timestamp())
+        except Exception:
+            ts = 0
+        name, addr = parseaddr(dec(mi.get('From')))
+        refs = ' '.join([mi.get('In-Reply-To') or '', mi.get('References') or ''])
+        rows.append({
+            'folder': folder,
+            'uid': u.decode(),
+            'uidvalidity': uidv,
+            'ts': ts,
+            'from': clean(name or addr),
+            'from_addr': clean(addr).lower(),
+            'to': clean(dec(mi.get('To'))),
+            'cc': clean(dec(mi.get('Cc'))),
+            'subject': clean(dec(mi.get('Subject'))),
+            'message_id': clean(mi.get('Message-ID')),
+            'in_reply_to': clean(mi.get('In-Reply-To')),
+            'refs': re.findall(r'<[^<>\s]+>', refs),
+            'seen': b'\\seen' in flags,
+            'text': own_text(mi, text_limit) if size <= RECENT_BODY_MAX else '',
+        })
+    return rows
+
+
+def sent_box(m):
+    """The mailbox flagged \\Sent in LIST (RFC 6154), else "Sent"."""
+    typ, data = m.list()
+    for raw in data or []:
+        line = raw.decode('utf-8', 'replace') if isinstance(raw, bytes) else str(raw)
+        mt = re.match(r'\(([^)]*)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(.+)$', line)
+        if mt and '\\sent' in mt.group(1).lower().split():
+            return mt.group(2).strip()
+    return 'Sent'
+
+
+def cmd_recent():
+    """One JSON object per recent INBOX and Sent message: read-only (EXAMINE,
+    BODY.PEEK), newest FM_MAIL_RECENT_LIMIT (default 30) per folder from the
+    last FM_MAIL_RECENT_DAYS (default 2) days. Exit 3 when the server cannot be
+    reached, 1 on any other failure. A missing Sent folder lists INBOX only."""
+    try:
+        days = max(1, int(os.environ.get('FM_MAIL_RECENT_DAYS') or '2'))
+        limit = max(1, int(os.environ.get('FM_MAIL_RECENT_LIMIT') or '30'))
+    except ValueError:
+        days, limit = 2, 30
+    since = (datetime.date.today() - datetime.timedelta(days=days)).strftime('%d-%b-%Y')
+    m = None
+    try:
+        m = connect_mailbox()
+        rows = recent_box(m, 'INBOX', 'inbox', since, limit, 600)
+        if rows is None:
+            raise imaplib.IMAP4.error('cannot open INBOX')
+        rows += recent_box(m, sent_box(m), 'sent', since, limit, 3000) or []
+    except OSError as e:
+        print('fm-mail recent: server unreachable:', e, file=sys.stderr)
+        return 3
+    except Exception as e:
+        print('fm-mail recent error:', e, file=sys.stderr)
+        return 1
+    finally:
+        if m is not None:
+            try:
+                m.logout()
+            except Exception:
+                pass
+    for row in rows:
+        print(json.dumps(row, ensure_ascii=False))
+    return 0
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else ''
     if cmd == 'read':
@@ -484,6 +616,8 @@ def main():
         return cmd_seen(sys.argv[2] if len(sys.argv) > 2 else '')
     if cmd == 'poll_list':
         return cmd_poll_list()
+    if cmd == 'recent':
+        return cmd_recent()
     raise SystemExit('unknown command')
 
 

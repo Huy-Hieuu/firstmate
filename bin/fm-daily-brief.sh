@@ -9,13 +9,18 @@
 # source's CURRENT rows as NDJSON objects with a string "id", and exits 3 when
 # the source is unreachable right now. On success the wrapper stores the rows
 # as state/brief/rows/<name>.ndjson with their time, prints only the rows whose
-# id is not in the routine cursor (so new rows wake firstmate through the
-# routine), and proposes every current id as the next cursor. A routine whose
-# probe ends in `>/dev/null` keeps its source brief-only: no wake, cursor still
-# committed. A failed or unreachable run keeps the previous rows, and the brief
-# shows them with their age. Row fields the brief reads:
+# id is not in the routine cursor and that do not set "wake": false (so new
+# rows wake firstmate through the routine), and proposes every current id as
+# the next cursor. A routine whose probe ends in `>/dev/null` keeps its source
+# brief-only: no wake, cursor still committed. A failed or unreachable run
+# keeps the previous rows, and the brief shows them with their age. Row fields
+# the brief reads:
 #   id, title, url          every row
-#   section                 needs | day | radar (default radar)
+#   section                 needs | day | radar | inbox | waiting | owe
+#                           (default radar); any other section is kept for the
+#                           source's own use and never shown
+#   push                    needs rows: push title used instead of the title,
+#                           for rows whose title carries third-party text
 #   start, end, allday      day rows: epoch seconds, all-day flag
 #   join, attendees, keys   day rows: join link, other attendees, ticket keys
 #   clash                   day rows: overlaps another timed event
@@ -26,8 +31,9 @@
 # place on each run and never empty: a value line, Needs you (open captain
 # decisions, recorded PRs, source rows marked needs, failing routines), Your day
 # (meetings, clashes, join links, a prep card for each meeting with other people
-# starting within 4h), Work radar, Fleet, and Routines. Third-party text in it
-# (ticket and meeting titles) is untrusted; `show` fences it.
+# starting within 4h), Work radar, Inbox (the mail source's inbox rows),
+# Waiting on others, You owe, Fleet, and Routines. Third-party text in it
+# (ticket, meeting, and mail titles) is untrusted; `show` fences it.
 #   Notify on new rows: each Needs you row has a key; a key not seen in the
 #   previous compose gets one needs-you push through bin/fm-notify.sh, and a key
 #   that disappears ends its push stretch, so an unchanged row never pushes
@@ -144,10 +150,11 @@ source_cmd() {
   if [ -n "${FM_ROUTINE_CURSOR_OUT:-}" ]; then
     printf '%s\n' "$ids" > "$FM_ROUTINE_CURSOR_OUT"
   fi
-  # New rows only: ids absent from the committed cursor.
+  # New rows only: ids absent from the committed cursor, unless the row opts out
+  # of waking.
   printf '%s\n' "${FM_ROUTINE_CURSOR:-}" \
     | jq -c -R -n --slurpfile rows "$ROWS/$name.ndjson" \
-      '[inputs | select(. != "")] as $seen | $rows[] | select(.id as $i | $seen | index($i) | not)'
+      '[inputs | select(. != "")] as $seen | $rows[] | select(.wake != false and (.id as $i | $seen | index($i) | not))'
 }
 
 # --- compose ----------------------------------------------------------------------
@@ -171,7 +178,7 @@ def age($at): if $at == null then "never fetched"
    + [ ($snap.recorded_prs // [])[] |
       {key: ("pr:" + .url), title: ("PR awaiting you: " + (.id | one)), url: .url, note: ""} ]
    + [ $all[] | select(.section == "needs") |
-      {key: .id, title: (.title // .id | one), url: (.url // ""), note: .src} ]
+      {key: .id, title: (.title // .id | one), push: (.push // .title // .id | one), url: (.url // ""), note: .src} ]
    + [ $routines[] | select(.failing) |
       {key: ("routine:" + .id), title: ("Routine " + .id + " is failing: " + (.last | one)), url: "", note: ""} ]
   ) as $needs
@@ -179,7 +186,7 @@ def age($at): if $at == null then "never fetched"
       and .start >= $now and .start - $now <= 14400) ] as $soon
 | ($soon | map(. as $m | ($m.keys // []) as $k |
       $m + {related: [ $radar[] | select(.title as $t | any($k[]; . as $kk | $t | contains($kk))) ]})) as $prep
-| if $mode == "needs" then $needs[] | [.key, .title, .url] | @tsv
+| if $mode == "needs" then $needs[] | [.key, (.push // .title), .url] | @tsv
   elif $mode == "prep" then $prep[] | .id
   else
   ([ $day[] | select(.allday | not) ] | length) as $meetings
@@ -208,12 +215,27 @@ def age($at): if $at == null then "never fetched"
       "- Next step: " + (if (.related | length) > 0 then "review the open items above before the call." else "skim the invite and agenda." end)),
     "",
     "## Work radar",
-    ([ $sources | to_entries[] | select(.key != "calendar" and .key != "toolchain") ] as $work
+    ([ $sources | to_entries[] | select(.key as $k | ["calendar", "toolchain", "mail", "followups", "upwork"] | index($k) | not) ] as $work
      | if ($work | length) == 0 then "- No work sources yet." else
        ($work[] | [.value.rows[] | select((.section // "radar") == "radar")] as $r
         | "- " + .key + ": \($r | length) item(s), " + age(.value.at),
           ($r[:10][] | "  - " + (.title // .id | one) + link),
           (if ($r | length) > 10 then "  - and \($r | length - 10) more" else empty end)) end),
+    "",
+    "## Inbox",
+    ([ $all[] | select(.section == "inbox") ] | sort_by(-(.ts // 0)) as $in
+     | if ($sources | has("mail") | not) and ($in | length) == 0 then "- No mail source yet." else
+       (if ($in | length) == 0 then "- Nothing new to read." else
+         ($in[:12][] | "- " + (.title // .id | one) + link),
+         (if ($in | length) > 12 then "- and \($in | length - 12) more" else empty end) end),
+       (if $sources | has("mail") then "- Mail " + age($sources.mail.at) else empty end) end),
+    ((["waiting", "Waiting on others"], ["owe", "You owe"]) as [$sec, $head]
+     | "",
+       "## " + $head,
+       ([ $all[] | select(.section == $sec) ] as $r
+        | if ($r | length) == 0 then "- Nothing tracked." else
+          ($r[:15][] | "- " + (.title // .id | one) + link),
+          (if ($r | length) > 15 then "- and \($r | length - 15) more" else empty end) end)),
     "",
     "## Fleet",
     (if $snap == {} then "- Fleet snapshot unavailable." else
@@ -263,7 +285,8 @@ compose() {
   since=$(cat "$BSTATE/posted" 2>/dev/null || echo $((t - 86400)))
   value=$( { [ -f "$VALUE" ] && cat "$VALUE"; } | jq -r -s --argjson since "$since" '
       [.[] | select(.ts > $since)] | group_by(.kind)
-      | map("\(length) " + (if .[0].kind == "landed" then "landed" elif .[0].kind == "meeting-prepped" then "meeting(s) prepped" else .[0].kind end))
+      | map("\(length) " + ({"landed": "landed", "meeting-prepped": "meeting(s) prepped", "sorted": "email(s) sorted",
+          "drafted": "reply draft(s) written"}[.[0].kind] // .[0].kind))
       | join(", ")' 2>/dev/null)
   set -- --argjson now "$t" --arg date "$date" --arg value "$value" \
     --argjson snap "$snap" --argjson sources "$sources" --argjson routines "${routines:-[]}"
