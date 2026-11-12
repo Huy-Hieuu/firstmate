@@ -205,4 +205,6 @@ fm_lock_release "$MERGE_PROJECT_LOCK" || true
 MERGE_PROJECT_LOCK=
 # Opt-in fleet activity ledger (docs/fleet-ledger.md); off costs one file test.
 [ ! -e "${FM_CONFIG_OVERRIDE:-$FM_HOME/config}/fleet-ledger" ] || FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-fleet-ledger.sh" merged "$ID" local || true
+# The daily brief's value ledger counts the landing (bin/fm-daily-brief.sh).
+FM_HOME=$FM_HOME FM_STATE_OVERRIDE=$STATE "$SCRIPT_DIR/fm-daily-brief.sh" value landed "$ID" >/dev/null 2>&1 || true
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"
