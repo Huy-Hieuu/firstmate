@@ -100,7 +100,7 @@ Each effective `FM_HOME` contains private operational directories.
 `data/` holds durable private fleet records:
 
 - Project and secondmate registries.
-- Captain preferences and optional shared captain preferences.
+- Captain preferences and optional shared captain preferences, plus on-demand topic memory under `data/memory/` and person memory under `data/people/`.
 - Learnings, backlog, briefs, scout reports, optional task status archives, and the optional per-task no-mistakes pipeline-spend ledger.
 - The captain's optional goals, the shared routine-owner lease, routine definitions under `data/routines/`, daily briefs under `data/brief/`, the brief's value ledger `data/value.jsonl`, the follow-up tracker `data/waiting.md`, and reply drafts under `data/drafts/`.
 - The decision log `data/decisions.jsonl` and the friction record `data/friction.jsonl`.
@@ -843,7 +843,7 @@ action=Tell the captain which pull requests newly await his review.
 ### Daily brief (data/brief/)
 
 [`bin/fm-daily-brief.sh`](../bin/fm-daily-brief.sh) builds one page a day in code, `data/brief/<YYYY-MM-DD>.md`, from brief sources, the bearings snapshot, and the value ledger; its header owns the row fields, push rules, and state files.
-The page has a value line, Needs you, Your day with a prep card for each meeting with other people in the next four hours, Work radar, Inbox, Waiting on others, You owe, Fleet, and Routines.
+The page has a value line, Needs you, Your day with a prep card for each meeting with other people in the next four hours, Work radar, Inbox, Waiting on others, You owe, Fleet, Ideas and memory when a source proposed any in the last day, and Routines.
 A new Needs you row pushes once through `fm-notify.sh`, an unchanged row never pushes again, and the daily post sends one summary push.
 The first session of the day, or the first after three hours away, opens with today's brief in the session-start digest.
 Landed work, prepped meetings, sorted mail, and reply drafts are counted in `data/value.jsonl`, and the brief's first line reports them since the last post.
@@ -858,6 +858,7 @@ Every source probe is read-only and uses only access the captain already set up:
 | `jira` | [`fm-probe-jira.sh`](../bin/fm-probe-jira.sh): open issues assigned to the captain | `config/jira` with `url=` and an `auth_cmd=` that prints the Authorization header from the captain's own secret store |
 | `calendar` | [`fm-probe-calendar.sh`](../bin/fm-probe-calendar.sh): meetings in the next 36 hours, clashes, join links, a push 10 minutes before each | `config/calendar` with one `ics=<private iCal URL>` per calendar and optional `me=<address>` lines |
 | `toolchain` | [`fm-probe-toolchain.sh`](../bin/fm-probe-toolchain.sh): low disk, low agent quota, GitHub CLI signed out | none |
+| `dream` | [`fm-probe-dream.sh`](../bin/fm-probe-dream.sh): the nightly dream; memory entries to archive or merge, a budget overrun, and automation ideas and preferences quoted from the last week's task briefs, shown under Ideas and memory for a day | none for the memory rows; ideas need `bin/fm-inbox.sh ask` set up (`config/inbox-region`, `config/inbox-ask-model`) and send recent task requests to that model |
 
 A probe runs from `FM_HOME`, so in a home that is not the code root, name the scripts by absolute path.
 These examples are not enabled until their files exist and `fm-routine.sh arm` has run:
@@ -879,6 +880,9 @@ probe=bin/fm-daily-brief.sh source calendar >/dev/null
 # data/routines/brief-toolchain.routine
 schedule=every 1h
 probe=bin/fm-daily-brief.sh source toolchain >/dev/null
+# data/routines/brief-dream.routine
+schedule=daily 03:30
+probe=bin/fm-daily-brief.sh source dream >/dev/null
 ```
 
 ### Inbox and follow-ups
@@ -1442,6 +1446,10 @@ Shared captain preferences that apply across secondmate domains live only in the
 Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest.
 The file is created lazily on first learning and follows the internal [`stow` skill's](../.agents/skills/stow/SKILL.md) aging-tier and cold-archive contract: inspect the current file first and curate it instead of appending forever.
 Entries in the memory files may carry an `until` expiry or a strike-through, and the captain's "forget" requests are recorded in `data/memory/forgotten.txt`; the session-start digest hides expired, struck, and forgotten entries, and the `stow` skill owns that grammar while `bin/fm-memory.sh` owns its matching, file format, and the `data/` git journal of memory changes.
+Knowledge about one subject or person that is not needed in every session lives in topic files `data/memory/<slug>.md` and person files `data/people/<slug>.md`; the digest prints only their alias index, `bin/fm-memory.sh load` prints the files a request names, and they count against no startup budget.
+Every new memory entry is written through `bin/fm-memory.sh capture`, which refuses a fact without the verbatim captain quote or source line that shows it.
+`bin/fm-recall.sh <words>` searches the memory files, archives, scout reports, daily briefs, and status logs, using a per-machine SQLite FTS5 index in `state/recall.db` and a plain file scan where FTS5 is missing; it needs no setup.
+The nightly `dream` source of the [daily brief](#daily-brief-databrief) proposes memory upkeep and ideas without editing memory.
 
 There is no shared learnings file by captain decision.
 

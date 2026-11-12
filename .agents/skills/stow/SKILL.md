@@ -2,7 +2,7 @@
 name: stow
 description: >-
   Sweep the session for uncaptured durable knowledge and unfiled or wrong open work records, and curate startup memory.
-  Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, periodically to keep operational memory current, or when the captain asks firstmate to forget something.
+  Use when the captain invokes /stow (e.g. "/stow", "stow what you've learned"), before a session reset or context compaction, periodically to keep operational memory current, before writing any new memory, topic, or person entry, or when the captain asks firstmate to forget something.
 user-invocable: true
 metadata:
   internal: true
@@ -82,6 +82,29 @@ When the captain asks to forget something:
 
 When the captain later states a forgotten fact again, run `bin/fm-memory.sh unforget "<term>"` before capturing it.
 
+### Topic and person files
+
+Current knowledge that matters only when a subject comes up lives on demand rather than in the startup files: a topic file `data/memory/<slug>.md`, or a person file `data/people/<slug>.md` whose slug is that person's stable key.
+`bin/fm-memory.sh new topic|person <slug> [<alias>...]` creates one with its front matter, and its header owns the file format.
+The session-start digest prints only their alias index, so they cost almost nothing per session; run `bin/fm-memory.sh load "<text>"` on a task request, brief, or meeting prep to print every file whose name or alias the text mentions before acting on it.
+A person file holds that person's role, org, preferred channel, and timezone in its front matter and dated, sourced facts in its body.
+They use the same entry grammar, default to `pinned` with no clock, and carry no budget; record a fact that ends with its `until` date, and keep them consolidated during a pass like any editable memory file.
+`data/captain.md` and `data/learnings.md` stay the core files within the startup budget; a topic or person file is an allowed offload destination below.
+
+### Quote-gated capture
+
+No paraphrase-only fact enters memory: every new entry in a memory, topic, or person file is written with `bin/fm-memory.sh capture`, which requires the exact evidence as a quote.
+For a captain preference, the quote is the captain's own words from this session (source `chat`) or from a file that holds them, such as an inbox note or a task brief's `## Captain's intent`; never a question, a hypothetical, or a line firstmate or a worker wrote.
+For an operational fact, the quote is the source line itself, copied from the report, status log, or command output file that shows it.
+The command refuses, writing nothing, when a file source does not contain the quote, when a number, path, or URL in the fact is not in the quote, or when either names a forgotten term; a refusal means the fact is not captured, never that it is reworded until it passes.
+Rewriting, consolidating, retiering, and archiving entries already in memory stay ordinary edits under this skill.
+
+### Nightly dream proposals
+
+The nightly dream (`bin/fm-probe-dream.sh`, a daily brief source) only proposes: hidden entries to archive, overlapping entries to merge, a budget overrun to offload, and automation ideas and preferences quoted from recent task briefs.
+They appear in today's brief under Ideas and memory (`bin/fm-daily-brief.sh show`).
+A pass applies each memory proposal it can confirm under the rules above, and a proposed preference only through quote-gated capture from the brief that holds its quote; an automation idea becomes a routine only when the captain accepts it.
+
 ### Optional pass horizon (config/stow-pass-horizon)
 
 The wall-clock horizons above are this skill's default contract, and a home gets exactly them unless it asks for more.
@@ -136,6 +159,7 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    Promote `perishable` to `aging` when its condition keeps proving durable past its expected life, and retier in place when a supersession changes an entry's lifetime.
    `pinned` is exempt from this automatic decay step entirely.
    Then run `bin/fm-memory.sh due` and resolve every entry it lists in an editable file, whatever its tier: archive an expired entry with reason `expired <date>` unless the captain has extended it, archive a struck entry with reason `superseded`, and remove a forgotten mention under the forget procedure above.
+   Then resolve the nightly dream's memory proposals in today's brief under the dream section above.
 6. Consolidate every editable memory file as needed, not only the file apparently related to a new finding.
    Prefer one concise current rule or authoritative pointer over duplicate prose.
    Archive completed incident and release chronology, stale versions and paths, transient task state, resolved alternatives, old metrics, and report-sized procedures; merge or remove only superseded claims and duplicates whose facts are preserved elsewhere.
@@ -157,7 +181,7 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    In that last-resort case, create one captain-held decision that names the shortfall and each relevant pinned entry, with exactly these options: raise the effective budget, or explicitly approve offloading or trimming a named pinned entry.
    Route a read-only ownership constraint to its primary owner, and make every other unresolved excess a concrete captain decision that names the safe action still required.
    Never end a pass over budget as an accepted exception.
-9. Journal the pass with `bin/fm-memory.sh commit "stow <YYYY-MM-DD>"`, which commits only the memory files, the cold archive, and `data/memory/` as one commit in the home's own `data/` git repository and never pushes.
+9. Journal the pass with `bin/fm-memory.sh commit "stow <YYYY-MM-DD>"`, which commits only the memory files, the cold archive, `data/memory/`, and `data/people/` as one commit in the home's own `data/` git repository and never pushes.
    Any other deliberate memory edit outside a pass is journaled the same way with a reason that names it; `git -C data revert <sha>` undoes one journaled change.
    Where `data/` is not its own git repository the command reports that and changes nothing, which is not an exception.
 
@@ -216,6 +240,8 @@ Approved project-level destinations are not produced by stow: they ship normally
   Because this destination is local and untracked, it is also the JIT home for private conditional knowledge that no committed surface may hold.
 - An already-existing user-owned local on-demand note with an established trigger, after confirming it is untracked, private, and able to hold the quoted entry.
   The pass may add the entry to that existing owner but never creates a new note, skill, or trigger for this purpose.
+- A topic or person file under `data/memory/` or `data/people/` for this home's private conditional knowledge about one subject or person, where the digest's alias index is the trigger.
+  Because that index makes a new file live at once, the pass may create one with `bin/fm-memory.sh new` and give it the aliases a future request would use; the moved entry keeps its evidence line.
 - A project-level skill in the project's own repository, for situation-conditional knowledge within one project, through a normal ship task and the project's registered delivery mode.
   A project's committed `AGENTS.md` is never an offload destination: crewmates correct it but only humans extend it (AGENTS.md section 6).
 
@@ -226,7 +252,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
 
 1. Reduce non-pinned material now.
    For each eligible non-pinned candidate, record its first line, source file, estimated tokens, one-line trigger, live destination, privacy and visibility verdict, and actual budget relief in the completion receipt.
-   Autonomously relocate it only by adding it to an already-existing allowed JIT note, or by routing it through a project's established delivery path to an already-existing allowed project-level destination, then confirming that destination holds the quoted entry before removing the memory entry.
+   Autonomously relocate it only by adding it to an already-existing allowed JIT note, to a topic or person file (created first with `bin/fm-memory.sh new` when none fits, which counts as already existing because the alias index loads it), or by routing it through a project's established delivery path to an already-existing allowed project-level destination, then confirming that destination holds the quoted entry before removing the memory entry.
    A destination that needs creation, uncompleted project delivery, or any other future work is not live and cannot count as relief, so continue with the next archival or eviction rung instead of leaving an over-budget proposal pending.
 2. Propose pinned relocation only.
    For a pinned candidate, append a `proposed-offload` section with the same fields to the completion receipt, create or refresh one durable backlog item with `bin/fm-tasks-axi.sh add`, `bin/fm-tasks-axi.sh show <id> --full`, and `bin/fm-tasks-axi.sh update <id> --body-file <path>` as appropriate, then hold it through `bin/fm-captain-hold.sh hold`.
@@ -256,7 +282,7 @@ A local skill exists only in this home, so offloading an entry out of `data/capt
    Match each finding against the home's declared memory tiers first and capture a tier-owned finding to that tier, falling back to the local files only for classes no declared tier owns.
    When the owning tier is unreachable from this session, write the finding to the startup-loaded local memory file its class would otherwise use, or keep it where it already lives, carrying the pending-capture marker for that tier; it is still an exception for the receipt, never a reason to treat the local copy as sufficient.
 3. **Write within the existing boundaries.**
-   - Captain preferences and fleet-local operational facts belong in the destination selected by AGENTS.md after the required whole-file curation pass.
+   - Captain preferences and fleet-local operational facts belong in the destination selected by AGENTS.md after the required whole-file curation pass, written through quote-gated capture above; a fact about one subject or person that is not needed in every session goes to its topic or person file instead.
      Create `data/learnings.md` only for a genuinely new local learning with no stronger owner.
    - In a primary home, curate shared captain preferences only under the existing primary-authoritative shared-preference contract.
      In a secondmate home, route a newly discovered shared preference to the main firstmate through marked status or a document pointer instead of editing the inherited file.

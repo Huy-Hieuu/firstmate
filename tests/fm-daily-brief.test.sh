@@ -88,4 +88,33 @@ test_unreachable_source_is_deferred() {
   pass "an unreachable source is deferred and the brief keeps its last rows"
 }
 
-fm_test_run test_needs_row_pushes_once test_source_new_rows_wake_once test_unreachable_source_is_deferred
+test_dream_only_proposes_quoted_rows() {
+  local home t ask out before
+  home=$(new_home dream)
+  t=$(date +%s)
+  mkdir -p "$home/data/t1" "$home/data/t2"
+  printf "# Task\n## Captain's intent\nrun the Upwork search for me again\n## Firstmate spec\nx\n" > "$home/data/t1/brief.md"
+  printf "# Task\n## Captain's intent\nplease run the Upwork search again today\n" > "$home/data/t2/brief.md"
+  printf -- '- freeze ended <!--u:2000-01-01-->\n- keep pull request descriptions short and focused always <!--a:2026-11-01-->\n- keep pull request descriptions short and focused please <!--a:2026-11-01-->\n' > "$home/data/learnings.md"
+  before=$(cat "$home/data/learnings.md")
+  ask="$home/ask.sh"
+  printf '#!/bin/sh\nprintf "%%s\\n" "IDEA | Schedule the Upwork search daily | run the Upwork search for me again" "PREF | Prefers dark mode | I love dark mode"\n' > "$ask"
+  chmod +x "$ask"
+  FM_HOME="$home" FM_BRIEF_NOW="$t" FM_DREAM_ASK="$ask" bash "$BRIEF" source dream >/dev/null
+  brief "$home" "$t" compose
+  out=$(cat "$home/data/brief/"*.md)
+  assert_contains "$out" "## Ideas and memory" "the brief has no Ideas and memory section"
+  assert_contains "$out" "Idea: Schedule the Upwork search daily" "a quoted idea was not proposed"
+  assert_not_contains "$out" "dark mode" "a preference whose quote is in no brief was proposed"
+  assert_contains "$out" "Memory: archive data/learnings.md:1: expired 2000-01-01" "an expired entry was not proposed for archiving"
+  assert_contains "$out" "Memory: merge the overlapping entries data/learnings.md:2 and data/learnings.md:3" "overlapping entries were not proposed for a merge"
+  assert_not_contains "$out" "dream: " "the dream was listed on the work radar"
+  assert_equals "$before" "$(cat "$home/data/learnings.md")" "the dream edited a memory file"
+  rm -f "$home/data/t2/brief.md"
+  FM_HOME="$home" FM_BRIEF_NOW="$t" bash "$BRIEF" source dream >/dev/null
+  brief "$home" "$t" compose
+  assert_contains "$(cat "$home/data/brief/"*.md)" "Ideas are off until the side-question model is set up" "an unconfigured home does not say how to enable ideas"
+  pass "the dream proposes memory upkeep and quoted ideas in the brief without editing memory"
+}
+
+fm_test_run test_needs_row_pushes_once test_source_new_rows_wake_once test_unreachable_source_is_deferred test_dream_only_proposes_quoted_rows

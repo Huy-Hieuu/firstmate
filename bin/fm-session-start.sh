@@ -63,8 +63,9 @@
 #                       step 1, harvested WITHOUT waiting for it.
 #   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md (the last
-#                       three through fm-memory.sh view): read-only,
-#                       always safe, always runs.
+#                       three through fm-memory.sh view), and the alias index
+#                       of topic and person memory (fm-memory.sh index):
+#                       read-only, always safe, always runs.
 #   9. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
@@ -1068,6 +1069,8 @@ print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
 print_file_or_absent "$DATA/captain.md" "data/captain.md" memory
 print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)" memory
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md" memory
+subsection "memory index"
+FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-memory.sh" index 2>/dev/null || printf '(unavailable)\n'
 
 # --- 9. closing reminder -----------------------------------------------
 stage next-step

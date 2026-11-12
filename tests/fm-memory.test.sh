@@ -86,7 +86,54 @@ test_commit_journals_only_memory_paths() {
   pass "commit journals only memory paths, once, and never outside data's own repository"
 }
 
+test_capture_requires_verbatim_evidence() {
+  local data out status before
+  data=$(new_data capture)
+  printf 'note: keep Airflow retries at 3 with a 10m backoff\n' > "$data/note.txt"
+  before=$(cat "$data/learnings.md")
+  out=$(mem "$data" capture learnings.md "$data/note.txt" "keep Airflow retries at 5" "Airflow retries stay at 5" 2>&1); status=$?
+  expect_code 1 "$status" "capture with a quote absent from its source"
+  assert_contains "$out" "does not appear verbatim" "the refusal did not name the missing quote"
+  out=$(mem "$data" capture learnings.md "$data/note.txt" "keep Airflow retries at 3" "Airflow retries stay at 5" 2>&1); status=$?
+  expect_code 1 "$status" "capture of a number the quote does not hold"
+  assert_contains "$out" "does not contain: 5" "the refusal did not name the unsupported number"
+  out=$(mem "$data" capture captain.md chat "should PRs stay short?" "PRs stay short" 2>&1); status=$?
+  expect_code 1 "$status" "capture of a question"
+  out=$(mem "$data" capture captain.md chat "ClientX wants Loom videos" "ClientX wants Loom videos" 2>&1); status=$?
+  expect_code 0 "$status" "capture without a forgotten term"
+  mem "$data" forget Loom >/dev/null
+  out=$(mem "$data" capture captain.md chat "send ClientX a Loom" "ClientX gets Loom updates" 2>&1); status=$?
+  expect_code 1 "$status" "capture of a forgotten term"
+  assert_equals "$before" "$(cat "$data/learnings.md")" "a refused capture wrote to the memory file"
+  out=$(mem "$data" capture --until 2026-12-15 learnings.md "$data/note.txt" "keep Airflow retries at 3 with a 10m backoff" "Airflow DAG retries stay at 3 with a 10m backoff")
+  assert_contains "$(cat "$data/learnings.md")" "- Airflow DAG retries stay at 3 with a 10m backoff <!--a:2026-11-11--><!--u:2026-12-15-->
+  > \"keep Airflow retries at 3 with a 10m backoff\" ($data/note.txt, 2026-11-11)" "the captured entry lacks its markers or evidence line"
+  pass "capture writes only facts whose numbers sit in a verbatim quote, with the evidence line"
+}
+
+test_topic_index_loads_by_alias() {
+  local data out status
+  data=$(new_data topics)
+  mem "$data" new topic airflow "retry policy" >/dev/null
+  mem "$data" new person linh-nguyen Linh >/dev/null
+  mem "$data" capture people/linh-nguyen.md chat "Linh prefers Slack" "Linh prefers Slack" >/dev/null
+  out=$(mem "$data" index)
+  assert_contains "$out" "- topic airflow: retry policy" "the index did not list the topic with its alias"
+  assert_contains "$out" "- person linh-nguyen: Linh" "the index did not list the person"
+  out=$(mem "$data" load "what did we decide on the Retry Policy?")
+  assert_contains "$out" "== data/memory/airflow.md ==" "an alias in the text did not load the topic"
+  assert_not_contains "$out" "linh-nguyen" "a file the text does not name was loaded"
+  assert_contains "$(mem "$data" load "prep for the call with linh")" "Linh prefers Slack" "a person alias did not load the person's facts"
+  assert_contains "$(mem "$data" entries)" "data/people/linh-nguyen.md:" "entries did not cover person files"
+  printf 'mate-1\n' > "$TMP_ROOT/topics/.fm-secondmate-home"
+  out=$(FM_HOME="$TMP_ROOT/topics" mem "$data" capture captain-shared.md chat "always ask first" "Always ask first" 2>&1); status=$?
+  expect_code 1 "$status" "capture into captain-shared.md in a secondmate home"
+  pass "topic and person files are indexed and load when the text names an alias"
+}
+
 fm_test_run \
   test_view_hides_expired_and_struck_entries \
   test_forget_is_sticky_until_unforgotten \
-  test_commit_journals_only_memory_paths
+  test_commit_journals_only_memory_paths \
+  test_capture_requires_verbatim_evidence \
+  test_topic_index_loads_by_alias
