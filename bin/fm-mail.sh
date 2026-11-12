@@ -29,6 +29,12 @@
 #                        `at`/cron, or via the standing check armed by
 #                        bin/fm-mail-check.sh (docs/configuration.md
 #                        "Mail plane").
+#   recent               Print recent INBOX and Sent mail as JSON lines, read
+#                        with EXAMINE and BODY.PEEK so nothing is marked read
+#                        or changed; no wake, no cursor. Exit 3 when the
+#                        server is unreachable. The daily brief's mail source
+#                        (bin/fm-probe-mail.sh) is its consumer; bin/fm-mail.py
+#                        cmd_recent owns the fields and the window.
 #   status               Print configuration and the last poll cursor. No
 #                        network, no wake.
 #
@@ -183,6 +189,7 @@ usage() {
 fm-mail.sh read
 fm-mail.sh send <to> <subject> <body | ->
 fm-mail.sh poll
+fm-mail.sh recent
 fm-mail.sh status
 EOF
 }
@@ -632,6 +639,9 @@ case "${1:-}" in
       body="$(cat)"
     fi
     printf '%s' "$body" | run_py send "$to" "$subj" "-"
+    ;;
+  recent)
+    run_py recent
     ;;
   status)
     echo "mail account: $FM_MAIL_USER"
