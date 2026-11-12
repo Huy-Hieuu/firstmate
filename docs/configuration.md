@@ -15,7 +15,7 @@ Start with the directory layout, then use the setting reference for the behavior
 | Persistent secondmates | [Secondmate routes](#secondmate-routes-datasecondmatesmd) |
 | Review bots on owned GitHub pull requests | [Contribution review bots](#contribution-review-bots-configcontribution-review-bots) |
 | Stopping idle workers while a PR awaits review, and cleanup on merge | [Park on review](#park-on-review) |
-| Phone pushes, quiet hours, reachability, routine owner, routines, untrusted records, and goals | [Captain push, quiet hours, and routine foundations](#captain-push-quiet-hours-and-routine-foundations) |
+| Phone pushes, quiet hours, reachability, routine owner, routines, daily brief, untrusted records, and goals | [Captain push, quiet hours, and routine foundations](#captain-push-quiet-hours-and-routine-foundations) |
 | Per-run overrides and tuning | [Environment variables](#environment-variables) |
 
 ## FM_HOME
@@ -101,7 +101,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences.
 - Learnings, backlog, briefs, scout reports, optional task status archives, and the optional per-task no-mistakes pipeline-spend ledger.
-- The captain's optional goals, the shared routine-owner lease, and routine definitions under `data/routines/`.
+- The captain's optional goals, the shared routine-owner lease, routine definitions under `data/routines/`, daily briefs under `data/brief/`, and the brief's value ledger `data/value.jsonl`.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
 `state/` holds runtime records:
@@ -115,7 +115,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Private secondmate config-reread generations with their retry and quarantine state.
 - Per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`).
 - Parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
-- Push stretches and held quiet-time notices under `state/notify/`, cached reachability verdicts under `state/reach/`, and routine cursors and pacing under `state/routines/`.
+- Push stretches and held quiet-time notices under `state/notify/`, cached reachability verdicts under `state/reach/`, routine cursors and pacing under `state/routines/`, and daily brief source rows under `state/brief/`.
 
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`.
 
@@ -835,6 +835,47 @@ schedule=every 30m
 reach=github
 probe=since=${FM_ROUTINE_CURSOR:-1970-01-01T00:00:00Z}; date -u +%Y-%m-%dT%H:%M:%SZ > "$FM_ROUTINE_CURSOR_OUT"; gh search prs --review-requested=@me --state=open --updated=">$since" --json url --jq '.[].url'
 action=Tell the captain which pull requests newly await his review.
+```
+
+### Daily brief (data/brief/)
+
+[`bin/fm-daily-brief.sh`](../bin/fm-daily-brief.sh) builds one page a day in code, `data/brief/<YYYY-MM-DD>.md`, from brief sources, the bearings snapshot, and the value ledger; its header owns the row fields, push rules, and state files.
+The page has a value line, Needs you, Your day with a prep card for each meeting with other people in the next four hours, Work radar, Fleet, and Routines.
+A new Needs you row pushes once through `fm-notify.sh`, an unchanged row never pushes again, and the daily post sends one summary push.
+The first session of the day, or the first after three hours away, opens with today's brief in the session-start digest.
+Landed work and prepped meetings are counted in `data/value.jsonl`, and the brief's first line reports them since the last post.
+
+Each source is its own routine whose probe is `fm-daily-brief.sh source <name>`, so a source can be enabled, paused, or deferred on its own.
+New rows wake firstmate through the routine; ending the probe with `>/dev/null` keeps a source brief-only.
+Every source probe is read-only and uses only access the captain already set up:
+
+| Source | Probe | Setup before enabling |
+|---|---|---|
+| `gerrit` | [`fm-probe-gerrit.sh`](../bin/fm-probe-gerrit.sh): changes awaiting the captain in `gerrit-axi status` | a working `gerrit-axi`; add `reach=` naming a `config/reach` target for a VPN-bound host |
+| `jira` | [`fm-probe-jira.sh`](../bin/fm-probe-jira.sh): open issues assigned to the captain | `config/jira` with `url=` and an `auth_cmd=` that prints the Authorization header from the captain's own secret store |
+| `calendar` | [`fm-probe-calendar.sh`](../bin/fm-probe-calendar.sh): meetings in the next 36 hours, clashes, join links, a push 10 minutes before each | `config/calendar` with one `ics=<private iCal URL>` per calendar and optional `me=<address>` lines |
+| `toolchain` | [`fm-probe-toolchain.sh`](../bin/fm-probe-toolchain.sh): low disk, low agent quota, GitHub CLI signed out | none |
+
+A probe runs from `FM_HOME`, so in a home that is not the code root, name the scripts by absolute path.
+These examples are not enabled until their files exist and `fm-routine.sh arm` has run:
+
+```text
+# data/routines/brief.routine
+schedule=daily 08:00
+probe=bin/fm-daily-brief.sh compose --post --background
+# data/routines/brief-refresh.routine
+schedule=every 15m
+probe=bin/fm-daily-brief.sh compose --background
+# data/routines/brief-gerrit.routine
+schedule=every 30m
+reach=momo
+probe=bin/fm-daily-brief.sh source gerrit >/dev/null
+# data/routines/brief-calendar.routine
+schedule=every 5m
+probe=bin/fm-daily-brief.sh source calendar >/dev/null
+# data/routines/brief-toolchain.routine
+schedule=every 1h
+probe=bin/fm-daily-brief.sh source toolchain >/dev/null
 ```
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)

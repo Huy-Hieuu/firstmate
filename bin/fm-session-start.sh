@@ -1029,6 +1029,14 @@ if fm_pf_relay_active "$FM_HOME" \
   fi
 fi
 
+# Today's brief (bin/fm-daily-brief.sh) opens the first session of the day or a
+# return after a long gap; a home that composes no brief prints nothing here.
+BRIEF_TODAY=$(FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" "$SCRIPT_DIR/fm-daily-brief.sh" show --if-away 2>/dev/null) || BRIEF_TODAY=
+if [ -n "$BRIEF_TODAY" ]; then
+  subsection "Today's brief"
+  printf '%s\n' "$BRIEF_TODAY"
+fi
+
 # --- 7. network checks ------------------------------------------------------
 # Deliberately here and not later: these lines are actionable (a stuck clone, a
 # secondmate that could not be relaunched, broken GitHub auth), and the section
