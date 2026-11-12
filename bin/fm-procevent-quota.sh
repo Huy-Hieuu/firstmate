@@ -3,7 +3,7 @@
 #
 # Usage:
 #   fm-procevent-quota.sh arm [--interval <secs>] [--threshold <percent>] [--provider <provider>]
-#   fm-procevent-quota.sh poll [--interval <secs>] [--threshold <percent>] [--provider <provider>] [--timeout <secs>]
+#   fm-procevent-quota.sh poll [--interval <secs>] [--threshold <percent>] [--provider <provider>] [--timeout <secs>] [--stretch-file <path>]
 #   fm-procevent-quota.sh classify <result-file>
 #   fm-procevent-quota.sh terminal <result-file>
 #   fm-procevent-quota.sh source-id
@@ -20,7 +20,13 @@
 #            until quota drops below the threshold, invalid quota data stops
 #            the watch, or three consecutive transient command failures stop
 #            it. Missing or incompatible tools stop it immediately, and a
-#            successful read resets the command-failure streak.
+#            successful read resets the command-failure streak. With
+#            --stretch-file, which arm always passes as
+#            state/.procevent-<source-id>.stretch, low and exhausted fire once
+#            per limit stretch: a fired status is kept in that file, so a
+#            re-armed watch that reads the same status again keeps polling
+#            silently, a worse status (low to exhausted) fires, and a healthy
+#            read ends the stretch.
 # classify   Print the captured outcome class: low, exhausted, error, or unknown.
 # terminal   Every quota poll is terminal because the source fires at most once.
 # source-id  Print the canonical source id.
@@ -217,7 +223,8 @@ cmd_arm() {
   timeout=$(perl -e 'print int($ARGV[0] * 0.8 + 0.5)' "$interval") || timeout=30
   [ "$timeout" -ge 5 ] || timeout=5
   "$SCRIPT_DIR/fm-procevent.sh" register quota "$CANONICAL_SOURCE_ID" \
-    -- "$SCRIPT_DIR/fm-procevent-quota.sh" poll --interval "$interval" --threshold "$threshold" --provider "$PROVIDER" --timeout "$timeout" || exit 1
+    -- "$SCRIPT_DIR/fm-procevent-quota.sh" poll --interval "$interval" --threshold "$threshold" --provider "$PROVIDER" --timeout "$timeout" \
+    --stretch-file "$STATE/.procevent-$CANONICAL_SOURCE_ID.stretch" || exit 1
   printf 'armed: %s\n' "$CANONICAL_SOURCE_ID"
   printf 'provider: %s\n' "${PROVIDER:-(aggregate)}"
   printf 'threshold: %s%%\n' "$threshold"
@@ -228,13 +235,14 @@ cmd_arm() {
 # This is intentionally not the public `arm` path; the runner calls this command
 # directly, so the argv must match the registration.
 cmd_poll() {
-  local interval=$DEFAULT_INTERVAL threshold=$DEFAULT_THRESHOLD timeout=
+  local interval=$DEFAULT_INTERVAL threshold=$DEFAULT_THRESHOLD timeout='' stretch_file=''
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --interval)  [ "$#" -ge 2 ] || die "--interval needs a positive number"; interval=$2; shift 2 ;;
       --threshold) [ "$#" -ge 2 ] || die "--threshold needs a percent 0-100"; threshold=$2; shift 2 ;;
       --provider)  [ "$#" -ge 2 ] || die "--provider needs a value"; PROVIDER=$2; shift 2 ;;
       --timeout)   [ "$#" -ge 2 ] || die "--timeout needs a positive integer"; timeout=$2; shift 2 ;;
+      --stretch-file) [ "$#" -ge 2 ] || die "--stretch-file needs a path"; stretch_file=$2; shift 2 ;;
       *) usage ;;
     esac
   done
@@ -242,7 +250,7 @@ cmd_poll() {
   valid_percent "$threshold" || die "--threshold needs a percent 0-100"
   [ -z "$timeout" ] || positive_int "$timeout" || die "--timeout needs a positive integer"
   resolve_provider "$PROVIDER"
-  local json detail status polls=0 consecutive_failures=0 read_rc detail_msg
+  local json detail status polls=0 consecutive_failures=0 read_rc detail_msg stretch
   while :; do
     polls=$((polls + 1))
     json=$(quota_json "${timeout:-}") && read_rc=0 || read_rc=$?
@@ -268,8 +276,17 @@ cmd_poll() {
     consecutive_failures=0
     status=$(condition_status "$json" "$PROVIDER" "$threshold")
     case "$status" in
-      healthy) sleep "$interval"; continue ;;
-      low|exhausted) : ;;
+      healthy) [ -z "$stretch_file" ] || rm -f "$stretch_file"; sleep "$interval"; continue ;;
+      low|exhausted)
+        if [ -n "$stretch_file" ]; then
+          stretch=$(cat "$stretch_file" 2>/dev/null || true)
+          if [ "$stretch" = "$status" ] || { [ "$stretch" = exhausted ] && [ "$status" = low ]; }; then
+            sleep "$interval"
+            continue
+          fi
+          printf '%s\n' "$status" > "$stretch_file" || true
+        fi
+        ;;
       *) status=error ;;
     esac
     detail=$(details "$json" "$PROVIDER")

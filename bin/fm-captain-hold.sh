@@ -60,7 +60,9 @@
 # card.
 #
 # `answer` records the captain's exact words and resolves the call in the same
-# act. It requires a non-empty captain decision file of at most 8192 bytes.
+# act; each newly recorded answer also appends one bin/fm-decision-log.sh row
+# naming the task, best-effort. It requires a non-empty captain decision file
+# of at most 8192 bytes.
 # With config/hold-answer-words present, it also refuses a file holding only
 # an option selection (one letter or digit, bare, in parentheses, or followed
 # by `.` or `)`, with any surrounding blanks), because the displayed option
@@ -421,6 +423,19 @@ load_decision() {  # <path>; sets DECISION_TEXT and DECISION_DIGEST
   fi
   DECISION_TEXT=$decision
   DECISION_DIGEST=$(sha256_text "$decision")
+}
+
+# log_decision <task-id> <outcome>: one bin/fm-decision-log.sh row pointing at
+# the task, read from the decision text; a log failure never fails the answer.
+log_decision() {
+  local source choice
+  source=$(printf '%s\n' "$DECISION_TEXT" | awk 'NR == 1 && /^Captain answered this (call|decision) through / {
+    sub(/^Captain answered this (call|decision) through /, ""); sub(/\.$/, ""); print }')
+  choice=$(printf '%s\n' "$DECISION_TEXT" | awk '/^Answer: / { sub(/^Answer: /, ""); print; exit }')
+  [ -n "$choice" ] || choice=$(printf '%s\n' "$DECISION_TEXT" | awk 'NF { print; exit }')
+  FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" FM_DATA_OVERRIDE="$DATA" \
+    "$SCRIPT_DIR/fm-decision-log.sh" add --item "$1" --action "$2" \
+    --choice "$choice" --source "${source:-chat}" >/dev/null 2>&1 || true
 }
 
 # Mutations address the configured data directory's backlog from its root, the
@@ -1453,6 +1468,7 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "answered (repaired)"
+    log_decision "$id" repaired
     printf 'repaired: %s\n' "$id"
     return 0
   fi
@@ -1490,6 +1506,7 @@ command_answer() {
     body_has_resolution_record "$(show_field "$show" body)" \
       || fail "captain-held task $id did not retain its durable resolution record"
     publish_parent_resolution_then_retire "$id" "$occurrence" "$outcome"
+    log_decision "$id" "$outcome"
     printf '%s: %s\n' "$outcome" "$id"
     return 0
   fi
