@@ -16,9 +16,10 @@
 # keeps the previous rows, and the brief shows them with their age. Row fields
 # the brief reads:
 #   id, title, url          every row
-#   section                 needs | day | radar | inbox | waiting | owe | ideas
-#                           (default radar); any other section is kept for the
-#                           source's own use and never shown
+#   section                 needs | day | focus | radar | inbox | waiting | owe
+#                           | ideas (default radar); focus rows show under
+#                           Your day (bin/fm-focus.sh); any other section is
+#                           kept for the source's own use and never shown
 #   push                    needs rows: push title used instead of the title,
 #                           for rows whose title carries third-party text
 #   start, end, allday      day rows: epoch seconds, all-day flag
@@ -48,18 +49,27 @@
 # Value ledger. data/value.jsonl holds one {"ts","kind","key"} line per thing
 # done for the captain (landed, meeting-prepped); `value <kind> <key>` appends
 # one unless that kind and key are already recorded. The brief's first line
-# counts the entries since the last posted brief.
+# counts the entries since the last posted brief; `value-since <epoch>` prints
+# that same count line for any window (the weekly review uses it).
 #
 # Presence. `show --if-away` prints today's brief, fenced as untrusted records,
 # only when the captain was last active on an earlier day or at least
 # FM_BRIEF_AWAY_SECS (default 10800) ago, then records now in
 # state/last-active; the session-start digest calls it.
 #
+# Spoken brief (opt-in). `speak` prints today's brief as plain sentences for
+# text-to-speech: no code, tables, URLs, or file paths, and no Routines
+# section. `--say` plays them with macOS `say`; `--out <file>` writes an audio
+# file through `say -o` (for example brief.aiff or brief.m4a). Nothing speaks
+# unless the captain runs it or registers a routine that does.
+#
 # Usage:
 #   fm-daily-brief.sh source <name> [<command>...]
 #   fm-daily-brief.sh compose [--post] [--background]
 #   fm-daily-brief.sh show [--if-away]
+#   fm-daily-brief.sh speak [--say | --out <file>]
 #   fm-daily-brief.sh value <kind> <key>
+#   fm-daily-brief.sh value-since <epoch>
 #
 # FM_BRIEF_NOW=<epoch> overrides the clock for tests. Exit codes: 0 ok, 1
 # failure, 2 usage, 3 source unreachable (source only).
@@ -81,7 +91,7 @@ export FM_HOME
 . "$SCRIPT_DIR/fm-timeout-lib.sh"
 
 usage() {
-  echo "usage: fm-daily-brief.sh source <name> [<command>...] | compose [--post] [--background] | show [--if-away] | value <kind> <key>" >&2
+  echo "usage: fm-daily-brief.sh source <name> [<command>...] | compose [--post] [--background] | show [--if-away] | speak [--say | --out <file>] | value <kind> <key> | value-since <epoch>" >&2
   exit 2
 }
 
@@ -210,6 +220,7 @@ def age($at): if $at == null then "never fetched"
           + (if .clash then " [clash]" else "" end)
           + (if (.join // "") != "" then " - join " + .join else "" end)) end),
       "- Calendar " + age($sources.calendar.at) end),
+    ([ $all[] | select(.section == "focus") ][] | "- Focus: " + (.title // .id | one)),
     ($prep[] | "",
       "### Prep: " + (.title // "" | one) + " at " + (.start | hm),
       "- With: " + ((.attendees // []) | map(one) | join(", ")),
@@ -217,7 +228,7 @@ def age($at): if $at == null then "never fetched"
       "- Next step: " + (if (.related | length) > 0 then "review the open items above before the call." else "skim the invite and agenda." end)),
     "",
     "## Work radar",
-    ([ $sources | to_entries[] | select(.key as $k | ["calendar", "toolchain", "mail", "followups", "upwork", "dream"] | index($k) | not) ] as $work
+    ([ $sources | to_entries[] | select(.key as $k | ["calendar", "toolchain", "mail", "followups", "upwork", "dream", "focus"] | index($k) | not) ] as $work
      | if ($work | length) == 0 then "- No work sources yet." else
        ($work[] | [.value.rows[] | select((.section // "radar") == "radar")] as $r
         | "- " + .key + ": \($r | length) item(s), " + age(.value.at),
@@ -288,11 +299,7 @@ compose() {
         | {id: .[0], state: .[2], last: .[3],
            failing: ((.[2] | test("^(invalid|backoff)")) or (.[3] | test("^last: failed")))}]')
   since=$(cat "$BSTATE/posted" 2>/dev/null || echo $((t - 86400)))
-  value=$( { [ -f "$VALUE" ] && cat "$VALUE"; } | jq -r -s --argjson since "$since" '
-      [.[] | select(.ts > $since)] | group_by(.kind)
-      | map("\(length) " + ({"landed": "landed", "meeting-prepped": "meeting(s) prepped", "sorted": "email(s) sorted",
-          "drafted": "reply draft(s) written"}[.[0].kind] // .[0].kind))
-      | join(", ")' 2>/dev/null)
+  value=$(value_since "$since")
   set -- --argjson now "$t" --arg date "$date" --arg value "$value" \
     --argjson snap "$snap" --argjson sources "$sources" --argjson routines "${routines:-[]}"
   page=$(jq -n -r "$@" --arg mode page "$BRIEF_JQ") || return 1
@@ -318,6 +325,14 @@ compose() {
 }
 
 # --- value / show ---------------------------------------------------------------
+value_since() {  # <epoch>: "<n> landed, <n> meeting(s) prepped, ..." since then
+  { [ -f "$VALUE" ] && cat "$VALUE"; } | jq -r -s --argjson since "$1" '
+    [.[] | select(.ts > $since)] | group_by(.kind)
+    | map("\(length) " + ({"landed": "landed", "meeting-prepped": "meeting(s) prepped", "sorted": "email(s) sorted",
+        "drafted": "reply draft(s) written"}[.[0].kind] // .[0].kind))
+    | join(", ")' 2>/dev/null
+}
+
 value_add() {
   local kind=$1 key=$2
   valid_name "$kind" && [ -n "$key" ] || usage
@@ -350,13 +365,74 @@ show() {
   "$SCRIPT_DIR/fm-records.sh" wrap brief < "$file"
 }
 
+# speakable: markdown on stdin to plain spoken sentences on stdout. Drops code
+# fences and spans, tables, comments, URLs, file paths, and the Routines
+# section; keeps link text; turns headings and list items into sentences.
+speakable() {
+  perl -CS -ne '
+    BEGIN { $fence = 0; $skip = 0 }
+    chomp;
+    if (/^\s*```/) { $fence = !$fence; next }
+    next if $fence;
+    if (/^#{1,6}\s+(.*)$/) { $_ = $1; $skip = /^Routines\b/ ? 1 : 0; next if $skip }
+    elsif ($skip) { next }
+    next if /^\s*\|/;
+    s/<!--.*?-->//g;
+    s/`[^`]*`//g;
+    s/\[([^\]]*)\]\([^)]*\)/$1/g;
+    s{\b(?:https?|ftp|file)://\S+}{}g;
+    s{\bwww\.\S+}{}g;
+    s{(?:^|(?<=[\s(]))(?:~|\.{1,2})?/[\w.@~-]+(?:/[\w.@~-]*)*}{}g;
+    s{\b[\w.@-]+/[\w.@-]+/[\w.@/-]*}{}g;
+    s{\b[\w-]+/[\w-]+\.[A-Za-z]{1,5}\b}{}g;
+    s/^\s*(?:[-*+]|\d+\.)\s+//;
+    s/\s*\x{b7}\s*/, /g;
+    s/\(s\)/s/g;
+    s/\[clash\]/(clash)/g;
+    s/(\*\*|__|\*|_)(\S(?:.*?\S)?)\1/$2/g;
+    s/\s+-\s+(?:join\s*)?(?=[,;.)]|$)//g;
+    s/\(\s*\)//g;
+    s/\s{2,}/ /g; s/^\s+|\s+$//g;
+    next if $_ eq "";
+    $_ .= "." unless /[.!?:]$/;
+    print "$_\n";'
+}
+
+speak() {
+  local mode=print out='' file tmp rc=0
+  case "${1:-}" in
+    '') ;;
+    --say) [ "$#" -eq 1 ] || usage; mode=say ;;
+    --out) [ "$#" -eq 2 ] && [ -n "$2" ] || usage; mode=file out=$2 ;;
+    *) usage ;;
+  esac
+  file="$BRIEFS/$(day_of "$(now)").md"
+  [ -f "$file" ] || { echo "fm-daily-brief: no brief for today yet" >&2; return 1; }
+  if [ "$mode" = print ]; then
+    speakable < "$file"
+    return
+  fi
+  command -v say >/dev/null 2>&1 || { echo "fm-daily-brief: speaking needs macOS say" >&2; return 1; }
+  tmp=$(mktemp "${TMPDIR:-/tmp}/fm-brief-speak.XXXXXX") || return 1
+  speakable < "$file" > "$tmp" || rc=1
+  if [ "$rc" = 0 ] && [ "$mode" = say ]; then
+    say -f "$tmp" || rc=1
+  elif [ "$rc" = 0 ]; then
+    say -o "$out" -f "$tmp" || rc=1
+  fi
+  rm -f "$tmp"
+  return "$rc"
+}
+
 CMD=${1:-}
 [ "$#" -eq 0 ] || shift
 case "$CMD" in
   source) [ "$#" -ge 1 ] || usage; source_cmd "$@" ;;
   compose) compose "$@" ;;
   show) [ "$#" -le 1 ] || usage; show "$@" ;;
+  speak) speak "$@" ;;
   value) [ "$#" -eq 2 ] || usage; value_add "$1" "$2" ;;
+  value-since) [ "$#" -eq 1 ] || usage; case "$1" in ''|*[!0-9]*) usage ;; esac; value_since "$1" ;;
   -h|--help|help) sed -n '2,/^set -u$/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' ;;
   *) usage ;;
 esac

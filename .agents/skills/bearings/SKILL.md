@@ -29,6 +29,7 @@ Board answers are acted on later under the normal authority rules; this skill's 
 - When the captain asks to include PRs, pass the snapshot command's live-PR opt-in.
 - `/bearings include PRs` remains chat-only and makes the live-PR opt-in.
 - `/bearings file include PRs` and `/bearings lavish include PRs` compose the same way.
+- "Resume <context>" for one project, person, or client is not a Bearings invocation: run `bin/fm-resume.sh <context>` and relay its read-only context pack in plain words.
 
 ## What it does
 

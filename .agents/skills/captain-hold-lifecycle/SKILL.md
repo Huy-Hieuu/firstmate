@@ -70,7 +70,7 @@ The absence of a routed work item is not a divergence and the guard never requir
 
 1. Read the complete investigation result and complete the visual review before declaring either complete.
 2. Inventory only genuine unresolved choices that require the captain, and find the task each one gates.
-3. Firstmate holds that task - or creates one captain-held task for the review's open questions - with a concise reason carrying the question and options.
+3. Firstmate holds that task - or creates one captain-held task for the review's open questions - with a concise reason carrying the question and options; for a hard call with real tradeoffs, `bin/fm-decision-log.sh frame` writes that hold with two to four options, each with its cost, reversibility, and pre-mortem, and a revisit date, and a Lavish board stays optional.
 4. Attest the full inventory for that review pass under the caller authority in Policy above.
 5. When the home enables [answer words](../../../docs/configuration.md#answer-words-confighold-answer-words), use this interview sequence.
    Register one keyed task before presenting the questions, feed each answer with that task id and its displayed option words, then verify that the task closed and retains its selected answer.
