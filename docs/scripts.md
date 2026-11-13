@@ -156,11 +156,17 @@ The shared no-mistakes gate lifecycle boundary is summarized in [architecture.md
 | `fm-check-unregister.sh` | Retire a custom watcher check and its trust binding by validated task id            |
 | `fm-check-lib.sh`        | Validate custom-check registrations and prepare private execution snapshots          |
 | `fm-routine.sh`          | Captain-registered routines: scheduled shell probes with a two-phase cursor, pacing, and backoff, run by one standing watcher check |
-| `fm-daily-brief.sh`      | The captain's daily brief: compose the page from routine source rows, push new Needs you rows once, keep the value ledger, and surface the brief after time away |
+| `fm-daily-brief.sh`      | The captain's daily brief: compose the page from routine source rows, push new Needs you rows once, keep the value ledger, surface the brief after time away, and speak it on request |
+| `fm-weekly-review.sh`    | The captain's weekly review page from finished work, slipped follow-ups, people, decisions, incidents, next week's calendar, investments, and skill suggestions |
 | `fm-probe-*.sh`          | Read-only daily brief sources (`gerrit`, `jira`, `calendar`, `toolchain`, `mail`, `upwork`, and the nightly memory and ideas `dream`) run through `fm-daily-brief.sh source <name>` |
 | `fm-followups.sh`        | The captain's follow-ups: quote-gated waiting-on and you-owe tracker, mail sorting calls, local reply drafts that are never sent, and the brief's `followups` source |
 | `fm-memory.sh`           | Apply the memory grammar: hide expired, struck, and forgotten entries, journal memory changes, index and load topic and person files, and refuse a capture without its verbatim quote |
 | `fm-recall.sh`           | Full-text recall over memory, archives, scout reports, daily briefs, and status logs, fenced as untrusted records |
+| `fm-resume.sh`           | Read-only context pack for one project, person, or client: matching fleet work, open calls, follow-ups, decisions, memory, and recall |
+| `fm-invest.sh`           | Investment watch: quotes and headlines for `data/invest/watch.toml`, threshold checks for a `when` watch; reports only, never trades |
+| `fm-phone.sh`            | Inert-until-configured two-way Telegram phone channel: notes, status, keyed answers with merge and PROD refused, and a push channel |
+| `fm-focus.sh`            | Daily brief source suggesting one meeting to decline or move when the next workday morning has no focus block; never edits a calendar |
+| `fm-skill-review.sh`     | Post-task skill review: at most three proposed skill diffs from one tool-less model call, written for the captain and never applied |
 | `fm-tool-update-check.sh` | Report watched tooling with an update available, and updates installed but left inert by PATH order |
 | `fm-startup-growth-check.sh` | Daily metadata-only growth check for startup memory and tracked startup/instruction surfaces |
 | `fm-usage-warner.sh`     | Opt-in macOS threshold warner that notifies once when a configured Claude usage window crosses its percentage |

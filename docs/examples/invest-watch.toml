@@ -1,0 +1,14 @@
+# Copy to data/invest/watch.toml and replace these placeholders with your own
+# watch list. bin/fm-invest.sh reads it; it holds no positions, no broker
+# account, and no credential, and firstmate never trades from it.
+
+[[watch]]
+ticker = "AAPL"                 # Yahoo Finance symbol
+below = 180                     # alert at or below this price
+above = 400                     # alert at or above this price
+keywords = ["Apple earnings"]   # news searches shown in the weekly review
+
+[[watch]]
+ticker = "VNM.VN"               # a Ho Chi Minh City listing
+below = 50000
+keywords = ["Vinamilk"]

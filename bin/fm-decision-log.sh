@@ -19,6 +19,18 @@
 #       Print matching rows oldest first, one per line:
 #       <date> <item> <actor>/<action>: <choice> (via <source>[; rule <rule>])
 #       --limit keeps the newest <n> rows (default 20).
+#   fm-decision-log.sh frame <task-id> --question <text> --until YYYY-MM-DD
+#                            [--repo <repo>]   (options on stdin)
+#       Decision support: turn one open decision into a short options record
+#       and hold it for the captain. Stdin holds 2 to 4 option lines,
+#       `<option> | <cost> | <reversibility> | <pre-mortem>`, every field
+#       non-empty; the pre-mortem is the likeliest way that option fails. The
+#       record becomes the hold reason through bin/fm-captain-hold.sh hold
+#       --until <date> (the revisit date; a missing task is created with the
+#       question as its title), so bearings, the brief, and the task show the
+#       options, and one `framed` row by firstmate is appended here. The
+#       captain's later answer goes through bin/fm-captain-hold.sh answer as
+#       for any captain call, which adds its own row.
 #
 # Record: data/decisions.jsonl (durable, private), one JSON object per line:
 #   {"ts":"<UTC ISO-8601>","date":"YYYY-MM-DD","item":..,"action":..,
@@ -50,6 +62,8 @@ usage() {
 flat() {  # <text>: one line, no control characters, at most 300 characters
   printf '%s' "$1" | tr '\t\n\r' '   ' | tr -d '\000-\037\177' | cut -c1-300
 }
+
+trim() { flat "$1" | sed 's/^ *//; s/ *$//'; }
 
 cmd_add() {
   local item='' choice='' source='' action=decided actor=captain rule='' unattended=false
@@ -98,11 +112,57 @@ cmd_list() {
     "$LOG" | tail -n "$limit"
 }
 
+cmd_frame() {
+  local id=${1:-} question='' until='' repo='' line opt cost rev pm n=0 names='' reason title=()
+  [ -n "$id" ] || usage
+  shift
+  while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || usage
+    case "$1" in
+      --question) question=$2 ;;
+      --until) until=$2 ;;
+      --repo) repo=$2 ;;
+      *) usage ;;
+    esac
+    shift 2
+  done
+  [ -n "$question" ] && [ -n "$until" ] || usage
+  question=$(flat "$question")
+  reason="Decide: $question"
+  while IFS= read -r line; do
+    [ -n "$(printf '%s' "$line" | tr -d '[:space:]')" ] || continue
+    IFS='|' read -r opt cost rev pm <<EOF
+$line
+EOF
+    opt=$(trim "$opt") cost=$(trim "$cost") rev=$(trim "$rev") pm=$(trim "${pm:-}")
+    if [ -z "$opt" ] || [ -z "$cost" ] || [ -z "$rev" ] || [ -z "$pm" ]; then
+      echo "fm-decision-log: an option line needs <option> | <cost> | <reversibility> | <pre-mortem>: $line" >&2
+      return 1
+    fi
+    n=$((n + 1))
+    reason="$reason
+$n. $opt - cost: $cost; reversibility: $rev; pre-mortem: $pm"
+    names="${names:+$names / }$opt"
+  done
+  if [ "$n" -lt 2 ] || [ "$n" -gt 4 ]; then
+    echo "fm-decision-log: frame needs 2 to 4 options on stdin, got $n" >&2
+    return 1
+  fi
+  reason="$reason
+Revisit by $until."
+  "$SCRIPT_DIR/fm-tasks-axi.sh" show "$id" >/dev/null 2>&1 || title=(--title "$question")
+  "$SCRIPT_DIR/fm-captain-hold.sh" hold "$id" --reason "$reason" --until "$until" \
+    ${repo:+--repo "$repo"} "${title[@]+"${title[@]}"}" || return 1
+  cmd_add --item "$id" --action framed --actor firstmate --source decision-support \
+    --choice "$n options: $names; revisit $until"
+}
+
 CMD=${1:-}
 [ "$#" -eq 0 ] || shift
 case "$CMD" in
   add) cmd_add "$@" ;;
   list) cmd_list "$@" ;;
+  frame) cmd_frame "$@" ;;
   -h|--help|help) usage ;;
   *) usage ;;
 esac

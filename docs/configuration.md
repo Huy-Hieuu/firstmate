@@ -102,7 +102,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Project and secondmate registries.
 - Captain preferences and optional shared captain preferences, plus on-demand topic memory under `data/memory/` and person memory under `data/people/`.
 - Learnings, backlog, briefs, scout reports, optional task status archives, and the optional per-task no-mistakes pipeline-spend ledger.
-- The captain's optional goals, the shared routine-owner lease, routine definitions under `data/routines/`, daily briefs under `data/brief/`, the brief's value ledger `data/value.jsonl`, the follow-up tracker `data/waiting.md`, and reply drafts under `data/drafts/`.
+- The captain's optional goals, the shared routine-owner lease, routine definitions under `data/routines/`, daily and weekly briefs under `data/brief/`, the brief's value ledger `data/value.jsonl`, the follow-up tracker `data/waiting.md`, reply drafts under `data/drafts/`, the investment watch list `data/invest/watch.toml`, and skill suggestions under `data/skill-review/`.
 - The decision log `data/decisions.jsonl` and the friction record `data/friction.jsonl`.
 - Explicitly installed content-addressed extension packages under `data/extensions/packages/`.
 
@@ -117,7 +117,7 @@ Each effective `FM_HOME` contains private operational directories.
 - Private secondmate config-reread generations with their retry and quarantine state.
 - Per-task steering-inbox records under `state/<id>.inbox/` (`bin/fm-task-inbox-lib.sh`).
 - Parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
-- Push stretches and held quiet-time notices under `state/notify/`, cached reachability verdicts under `state/reach/`, routine cursors and pacing under `state/routines/`, and daily brief source rows and firstmate's mail sorting calls under `state/brief/`.
+- Push stretches and held quiet-time notices under `state/notify/`, cached reachability verdicts under `state/reach/`, routine cursors and pacing under `state/routines/`, daily brief source rows and firstmate's mail sorting calls under `state/brief/`, and the phone channel's read offset under `state/phone/`.
 - The incident ledger `state/incidents.jsonl`, friction-scan offsets and loop-guard streaks under `state/friction/`, and quota-watch limit stretches in `state/.procevent-<source-id>.stretch`.
 
 `config/` holds local gitignored operating choices, including explicit extension bindings under `config/extensions.d/`.
@@ -917,6 +917,50 @@ probe=bin/fm-daily-brief.sh source upwork >/dev/null
 ```
 
 With the `mail` source enabled, the per-message wakes of `bin/fm-mail-check.sh` repeat the same mail; disarm that check unless both are wanted.
+
+### Weekly review, decisions, and investments
+
+[`bin/fm-weekly-review.sh`](../bin/fm-weekly-review.sh) writes `data/brief/week-<ISO year>-<ISO week>.md` from records the home already keeps: finished work, slipped follow-ups, what the captain owes and awaits, the Upwork pipeline, recorded decisions, incidents, next week's calendar, the investment watch, and new skill suggestions, each section left out when empty.
+Its header owns the sections and their sources.
+
+`bin/fm-decision-log.sh frame` turns a hard call into a captain hold whose reason lists two to four options, each with its cost, reversibility, and a pre-mortem, and whose `--until` date is the revisit date; the decision log records the framing, and the captain's answer closes the hold as usual.
+Its header owns the option format.
+
+[`bin/fm-invest.sh`](../bin/fm-invest.sh) reads the captain's watch list `data/invest/watch.toml` (example: [`docs/examples/invest-watch.toml`](examples/invest-watch.toml)), fetches public quotes and news headlines without a login, and only reports; it never trades.
+Its header owns the file format, sources, and exit codes.
+A price alert is a `when` watch, for example `bin/fm-procevent-when.sh arm invest --interval 900 --deadline <epoch> --condition <home>/bin/fm-invest.sh check --action <home>/bin/fm-invest.sh report`, with absolute paths.
+
+```text
+# data/routines/weekly-review.routine
+schedule=fri 16:00
+probe=bin/fm-weekly-review.sh compose --post --background
+```
+
+### Phone, spoken brief, focus, skill review, and resume
+
+These are off until the captain turns each one on.
+
+- **Two-way phone.** [`bin/fm-phone.sh`](../bin/fm-phone.sh) long-polls a Telegram bot outbound, so no port opens.
+  It is inert until the local, gitignored `config/phone` names a `token_cmd=` that prints the bot token from the captain's secret store and the one allowlisted `chat_id=`; setting it up needs the captain's approval, a bot he creates, and the token in his own store.
+  Messages become inbox notes, `status` gets the read-only status view, and `<task-id>: <answer>` answers that captain-held call through `fm-captain-hold.sh answers`.
+  Merges, landings, PROD changes, and ship or scout work items are never approved from the phone; such answers are kept as notes for an attended session.
+  `fm-phone.sh push` also serves as a `config/notify` command channel.
+  Its header owns the message grammar and refusals.
+- **Spoken brief.** `bin/fm-daily-brief.sh speak` prints today's brief as plain sentences, `--say` reads it aloud with macOS `say`, and `--out <file>` writes an audio file.
+- **Focus suggestions.** [`bin/fm-focus.sh`](../bin/fm-focus.sh) is a brief source that reads the calendar rows and, when tomorrow morning has no free focus block, suggests one meeting to decline or move under Your day; it never edits a calendar and needs the `calendar` source first.
+  The optional `config/focus` sets the window, block length, and workdays, as its header describes.
+- **Skill review.** After a ship or scout that took many tool steps, [`bin/fm-skill-review.sh`](../bin/fm-skill-review.sh) asks one tool-less model call for at most three skill diffs and writes them to `data/skill-review/<task-id>.md`; nothing is applied without the captain's word, and it needs `bin/fm-inbox.sh ask` set up.
+- **Resume a context.** [`bin/fm-resume.sh <context>`](../bin/fm-resume.sh) prints a read-only context pack: matching fleet work, open calls, follow-ups, decisions, topic and person memory, and recall hits.
+
+```text
+# data/routines/phone.routine
+schedule=every 1m
+min_interval=60
+probe=bin/fm-phone.sh poll >/dev/null
+# data/routines/brief-focus.routine
+schedule=every 30m
+probe=bin/fm-daily-brief.sh source focus bin/fm-focus.sh rows >/dev/null
+```
 
 ## Reliability and audit records
 

@@ -117,4 +117,20 @@ test_dream_only_proposes_quoted_rows() {
   pass "the dream proposes memory upkeep and quoted ideas in the brief without editing memory"
 }
 
-fm_test_run test_needs_row_pushes_once test_source_new_rows_wake_once test_unreachable_source_is_deferred test_dream_only_proposes_quoted_rows
+test_speak_drops_links_and_paths() {
+  local home out t=1794790800
+  home=$(new_home speak)
+  printf '{"id":"tool:disk","section":"needs","title":"Disk low on data/cache/x.db","url":"https://example.com/disk"}\n' > "$home/rows"
+  brief "$home" "$t" source toolchain cat "$home/rows" >/dev/null
+  brief "$home" "$t" compose
+  out=$(brief "$home" "$t" speak)
+  assert_contains "$out" "Needs you." "a heading did not become a sentence"
+  assert_contains "$out" "Disk low on" "the row text was dropped"
+  assert_not_contains "$out" "https://" "a URL would be read aloud"
+  assert_not_contains "$out" "data/cache" "a file path would be read aloud"
+  assert_not_contains "$out" '`' "markdown code marks would be read aloud"
+  assert_not_contains "$out" "## " "a markdown heading mark would be read aloud"
+  pass "the spoken brief keeps the words and drops links, paths, and markup"
+}
+
+fm_test_run test_needs_row_pushes_once test_source_new_rows_wake_once test_unreachable_source_is_deferred test_dream_only_proposes_quoted_rows test_speak_drops_links_and_paths
