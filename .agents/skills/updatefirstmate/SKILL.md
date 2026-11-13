@@ -43,7 +43,12 @@ This touches only the firstmate repo and its own worktrees, never anything under
    [ -x data/fork-sync/fm-fork-sync.sh ] && data/fork-sync/fm-fork-sync.sh
    [ -x data/fork-sync/fm-tools-upgrade.sh ] && data/fork-sync/fm-tools-upgrade.sh
    ```
-   The first rebases a home that carries its own commits onto the latest upstream and pushes them to its fork; on a conflict (exit 2) it changes nothing, so stop and report the conflicting commit.
+   The first rebases a home that carries its own commits onto the latest upstream and pushes them to its fork.
+   On a conflict (exit 2) it changes nothing in main, the fork, or `data/`, and leaves the rebase stopped in the worktree it prints as `RESOLVE-IN:`; resolve it yourself rather than stopping:
+   - In each conflicted file, combine both sides so the home keeps its own commit's behavior and gains the new upstream behavior; read both commits (`git -C <wt> show REBASE_HEAD`, the upstream commit touching the file) before editing, and never resolve by taking one side wholesale.
+   - `git -C <wt> add <files>` and `git -C <wt> rebase --continue`, repeating for every later stop; run `bash -n` on any resolved shell script.
+   - Then run `data/fork-sync/fm-fork-sync.sh --continue <wt>`, which adopts the result as main (backup ref `backup/main-before-fork-sync`), refuses if a local commit went missing, pushes the fork, and syncs `data/`.
+   - Stop and ask the captain only when the two sides genuinely contradict, so that keeping both is impossible; then abort with `git -C <wt> rebase --abort` and report the commit and the contradiction.
    The second upgrades the tools firstmate needs (the `-axi` CLIs, no-mistakes, omp) to their latest releases and prints one line per tool; report every upgraded or failed tool.
    A home without these scripts skips this step.
 
