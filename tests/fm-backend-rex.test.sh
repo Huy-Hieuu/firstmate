@@ -873,6 +873,10 @@ test_mark_progress_tint_and_alert_sequences() {
   : >"$MARK_TTY"
   mark_env "fm_backend_rex_mark '$MARK_T' blocked question 'Pick a db' '' fm-t1 fm-t1" || fail "notifying mark failed"
   grep -qF $'\033]777;notify;fm-t1;Pick a db\a' "$MARK_TTY" || fail "a notifying mark must carry one OSC 777 notification"
+  : >"$MARK_TTY"
+  mark_env "fm_backend_rex_mark '$MARK_T' blocked question 'Blocked' '' fm-t1 fm-t1 'Blocked: needs a db'" || fail "notifying mark with a body failed"
+  grep -qF "msg=$(printf 'Blocked' | base64)"$'\033\\' "$MARK_TTY" || fail "the record must carry only its msg"
+  grep -qF $'\033]777;notify;fm-t1;Blocked: needs a db\a' "$MARK_TTY" || fail "the notification must carry its own body"
   grep -qF "title=$(printf 'fm-t1' | base64)" "$MARK_TTY" || fail "a titled mark must carry its title"
   : >"$MARK_TTY"
   mark_env "fm_backend_rex_mark '$MARK_T' clear" || fail "clear failed"
@@ -955,13 +959,13 @@ test_marks_producer_converges_and_notifies_once() {
   printf '%s\n' "window=$MARK_T" "backend=rex" "kind=ship" >"$MARK_DIR/home/state/t1.meta"
   mark_task_status "needs-decision [at=1700000000] [key=pick-db]: pick a database"
   out=$(marks_run plan)
-  assert_equals $'t1\tblocked\tquestion\tNeeds your decision: pick a database' "$out" "needs-decision must plan a blocked question mark"
+  assert_equals $'t1\tblocked\tquestion\tNeeds your decision\tNeeds your decision: pick a database' "$out" "needs-decision must plan a blocked question mark with a short label and the full note"
   mark_status '[]'
   marks_run sync || fail "sync failed"
-  grep -qF "id=fm:title=$(printf 'fm-t1' | base64):msg=" "$MARK_TTY" || fail "sync must write the mark titled with the tab label"
-  grep -qF '777;notify;fm-t1;Needs your decision: pick a database' "$MARK_TTY" || fail "a new mark must notify once"
+  grep -qF "id=fm:title=$(printf 'fm-t1' | base64):msg=$(printf 'Needs your decision' | base64)"$'\033\\' "$MARK_TTY" || fail "sync must write only the short label, titled with the tab label"
+  grep -qF '777;notify;fm-t1;Needs your decision: pick a database' "$MARK_TTY" || fail "a new mark must notify once with the full note"
   : >"$MARK_TTY"
-  mark_status '[{"id":"fm","state":"blocked","kind":"question","app":"firstmate","title":"fm-t1","msg":"Needs your decision: pick a database"}]'
+  mark_status '[{"id":"fm","state":"blocked","kind":"question","app":"firstmate","title":"fm-t1","msg":"Needs your decision"}]'
   marks_run sync || fail "sync failed"
   [ ! -s "$MARK_TTY" ] || fail "an unchanged live mark must not be rewritten"
   mark_status '[]'
@@ -970,21 +974,29 @@ test_marks_producer_converges_and_notifies_once() {
   grep -qF '777;notify' "$MARK_TTY" && fail "a repair must not notify again"
   : >"$MARK_TTY"
   mark_task_status "working [at=1700000100]: back on it"
-  mark_status '[{"id":"fm","state":"blocked","kind":"question","app":"firstmate","msg":"Needs your decision: pick a database"}]'
+  mark_status '[{"id":"fm","state":"blocked","kind":"question","app":"firstmate","msg":"Needs your decision"}]'
   marks_run sync || fail "sync failed"
   grep -qF 'state=clear:app=firstmate:id=fm' "$MARK_TTY" || fail "a working task must clear its mark"
   [ ! -e "$MARK_DIR/home/state/.rex-mark-t1" ] || fail "a cleared mark must drop its cache"
   mark_task_status "blocked [at=1700000200]: needs a GitHub login"
   assert_equals auth "$(marks_run plan t1 | cut -f3)" "a credential blocker must be kind auth"
   mark_task_status "done [at=1700000300]: PR https://github.com/o/r/pull/9 checks green"
-  assert_contains "$(marks_run plan t1)" $'done\t\tPR ready: PR https://' "a done line with a URL plans a PR-ready done mark"
+  assert_contains "$(marks_run plan t1)" $'done\t\tPR ready\tPR ready: PR https://' "a done line with a URL plans a PR-ready done mark"
   mark_task_status "failed [at=1700000400]: build broke"
-  assert_contains "$(marks_run plan t1)" $'error\t\tFailed: build broke' "failed plans an error mark"
+  assert_equals $'t1\terror\t\tFailed\tFailed: build broke' "$(marks_run plan t1)" "failed plans an error mark"
   mark_task_status "needs-decision [at=1700000500] [key=k2]: second call"
   mark_status '[]'
   : >"$MARK_TTY"
   marks_run sync || fail "sync failed"
   [ -e "$MARK_DIR/home/state/.rex-mark-t1" ] || fail "a written mark must be cached"
+  mark_task_status "needs-decision [at=1700000600] [key=k3]: third call"
+  mark_status '[{"id":"fm","state":"blocked","kind":"question","app":"firstmate","title":"fm-t1","msg":"Needs your decision"}]'
+  : >"$MARK_TTY"
+  marks_run sync || fail "sync failed"
+  grep -qF '777;notify;fm-t1;Needs your decision: third call' "$MARK_TTY" || fail "a new note under the same label must notify again"
+  : >"$MARK_TTY"
+  marks_run sync || fail "sync failed"
+  [ ! -s "$MARK_TTY" ] || fail "a re-notified mark must not be rewritten on the next sync"
   printf 'off\n' >"$MARK_DIR/home/config/rex-status-marks"
   : >"$MARK_TTY"
   marks_run sync || fail "off sync failed"
