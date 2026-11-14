@@ -211,6 +211,42 @@ t_final_idle_after_working() {
   pass "cleanup: worker exit emits a final idle, no stale working ghost"
 }
 
+# The watcher folds the status log only when it changes: an in-place
+# same-size rewrite that keeps inode and mtime is not re-read, while an
+# append is. The rewrite's message never reaching the terminal is the proof
+# that an unchanged log is not re-folded.
+t_unchanged_status_not_refolded() {
+  local d=$TMP_ROOT/refold f
+  mkhome "$d"
+  start_term "$d"
+  sleep 300 &
+  local holder=$!
+  f=$d/state/t43.status
+  busy_rec "$d/state" t43 idle
+  printf 'needs-decision [at=1]: pick aaaa\n' >"$f"
+  env "${CLEAN_UNSET[@]}" FM_OSC7501_TTY="$TERM_SLAVE" FM_OSC7501_INTERVAL=1 \
+    bash "$SCRIPT" watch --task t43 --kind ship --state "$d/state" --harness opencode \
+    --parent "$holder" &
+  local wpid=$!
+  local first second third
+  first=$(printf 'Needs your decision: pick aaaa' | base64 | tr -d '\n')
+  second=$(printf 'Needs your decision: pick bbbb' | base64 | tr -d '\n')
+  third=$(printf 'Needs your decision: pick cccc' | base64 | tr -d '\n')
+  wait_cap "msg=$first" "$d/cap" 60 || fail "refold: first decision not emitted"
+  touch -r "$f" "$d/ref"
+  printf 'needs-decision [at=1]: pick bbbb\n' 1<>"$f"
+  touch -r "$d/ref" "$f"
+  sleep 3.5
+  grep -F -- "msg=$second" "$d/cap" >/dev/null 2>&1 \
+    && fail "refold: an unchanged status identity was folded again"
+  printf 'needs-decision [at=2]: pick cccc\n' >>"$f"
+  wait_cap "msg=$third" "$d/cap" 60 || fail "refold: appended decision not emitted"
+  kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  stop_term
+  pass "fold cache: unchanged status log is not re-folded, an append is"
+}
+
 # --- native reporting gate ----------------------------------------------------
 
 mkfake() { # <dir> <name> <version-out>
@@ -1183,6 +1219,7 @@ fm_test_run \
   t_ghostty_arms_watcher \
   t_status_transitions_and_final_done \
   t_final_idle_after_working \
+  t_unchanged_status_not_refolded \
   t_native_claude_skips_everything \
   t_term_resistant_probe_allows_worker_launch \
   t_old_claude_uses_generic \
