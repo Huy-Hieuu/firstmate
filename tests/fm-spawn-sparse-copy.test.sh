@@ -123,7 +123,7 @@ test_sparse_disagreements_refuse_before_any_copy() {
   out=$(run_spawn "$id" --mode direct-PR --yolo off --sparse alexis --backend zellij)
   status=$?
   [ "$status" -ne 0 ] || fail "a sparse copy on an unsupported backend should be refused"
-  assert_contains "$out" "backend=tmux, backend=herdr, or backend=orca only" "the backend refusal did not name the supported backends"
+  assert_contains "$out" "backend=tmux, backend=herdr, backend=rex, or backend=orca only" "the backend refusal did not name the supported backends"
 
   out=$(run_spawn sparse-refuse-relaunch-t1 --relaunch --sparse alexis)
   status=$?

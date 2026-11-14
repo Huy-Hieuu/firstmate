@@ -69,7 +69,7 @@
 #   fm_sparse_copy_path owns the layout), sets a cone-mode sparse checkout of the
 #   baseline plus these directories, fills it, then validates and freshens it to
 #   its base exactly like a pooled copy; the worker then makes its branch there
-#   as in any copy. backend=tmux and backend=herdr open their endpoint on the
+#   as in any copy. backend=tmux, backend=herdr, and backend=rex open their endpoint on the
 #   project and then move its top-level shell into that copy (no Treehouse slot
 #   or lease is taken); backend=orca resolves it with
 #   `orca worktree show --worktree path:<copy>` and opens only the terminal
@@ -4480,9 +4480,9 @@ if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
         exit 1
       fi
       case "$BACKEND" in
-      tmux | herdr | orca) ;;
+      tmux | herdr | rex | orca) ;;
       *)
-        echo "error: a sparse task copy runs on backend=tmux, backend=herdr, or backend=orca only; pass --backend tmux, --backend herdr, or --backend orca for $ID (backend=$BACKEND would allocate a full copy of $SPARSE_PROJECT)" >&2
+        echo "error: a sparse task copy runs on backend=tmux, backend=herdr, backend=rex, or backend=orca only; pass --backend tmux, --backend herdr, --backend rex, or --backend orca for $ID (backend=$BACKEND would allocate a full copy of $SPARSE_PROJECT)" >&2
         exit 1
         ;;
       esac
