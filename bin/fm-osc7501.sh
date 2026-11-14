@@ -300,6 +300,17 @@ osc_mark() {
   printf '%s' "${n:-0}"
 }
 
+# osc_ident <status-file> -> device, inode, size, and mtime of the log in one
+# stat exec; fails when absent. Any append or replacement changes it, so a
+# watcher re-folds the log only when this or the activity reading differs.
+osc_ident() {
+  if [ "$_FM_CLASSIFY_UNAME_S" = Darwin ]; then
+    LC_ALL=C /usr/bin/stat -f '%d:%i:%z:%m' "$1" 2>/dev/null
+  else
+    LC_ALL=C stat -c '%d:%i:%s:%Y' "$1" 2>/dev/null
+  fi
+}
+
 # osc_plan sets W_STATE, W_KIND, W_MSG from the task's signals and its
 # activity. act=unknown folds the same signals as idle - no unproven working
 # claim - except that a terminal line then proves the worker finished only
@@ -424,7 +435,7 @@ osc_watch() { # --task --kind --state --harness [--backend] [--target] [--owned 
   FM_OSC_APP="firstmate-$WATCH_HARNESS"
   FM_OSC_APP="${FM_OSC_APP:0:$FM_OSC7501_APP_MAX}"
   WATCH_TITLE="fm-$WATCH_TASK"
-  local dev=${FM_OSC7501_TTY:-/dev/tty} hb=0 hb_ticks last='' seq act busy_mark=0
+  local dev=${FM_OSC7501_TTY:-/dev/tty} hb=0 hb_ticks last='' seq='' act busy_mark=0 ident key plan_key=''
   [ "$WATCH_OWNED" = 1 ] && last=$(osc_seq idle '' "$WATCH_TITLE" '')
   exec 3>>"$dev" 2>/dev/null || exit 0
   osc_load_libs || exit 0
@@ -437,10 +448,17 @@ osc_watch() { # --task --kind --state --harness [--backend] [--target] [--owned 
       osc_final
       break
     fi
+    ident=$(osc_ident "$WATCH_STATE/$WATCH_TASK.status") || ident=''
     if act=$(osc_activity "$WATCH_HARNESS" "$WATCH_TASK" "$WATCH_STATE" "$WATCH_BACKEND" "$WATCH_TARGET"); then
       [ "$act" = busy ] && busy_mark=$(osc_mark "$WATCH_STATE/$WATCH_TASK.status")
-      osc_plan "$WATCH_TASK" "$WATCH_KIND" "$WATCH_STATE" "$act"
-      seq=$(osc_seq "$W_STATE" "$W_KIND" "$WATCH_TITLE" "$W_MSG")
+      # Folding a long status log is the loop's dominant cost, so reuse the
+      # previous record while its inputs - activity and log identity - hold.
+      key="$act:$ident"
+      if [ "$key" != "$plan_key" ]; then
+        osc_plan "$WATCH_TASK" "$WATCH_KIND" "$WATCH_STATE" "$act"
+        seq=$(osc_seq "$W_STATE" "$W_KIND" "$WATCH_TITLE" "$W_MSG")
+        plan_key=$key
+      fi
       if [ "$seq" != "$last" ]; then
         printf '%s' "$seq" >&3 2>/dev/null
         last=$seq
@@ -462,8 +480,12 @@ osc_watch() { # --task --kind --state --harness [--backend] [--target] [--owned 
       # has to be appended after the last reading that proved a turn was
       # running.
       if [ -n "$last" ]; then
-        osc_plan "$WATCH_TASK" "$WATCH_KIND" "$WATCH_STATE" unknown "$busy_mark"
-        seq=$(osc_seq "$W_STATE" "$W_KIND" "$WATCH_TITLE" "$W_MSG")
+        key="unknown:$busy_mark:$ident"
+        if [ "$key" != "$plan_key" ]; then
+          osc_plan "$WATCH_TASK" "$WATCH_KIND" "$WATCH_STATE" unknown "$busy_mark"
+          seq=$(osc_seq "$W_STATE" "$W_KIND" "$WATCH_TITLE" "$W_MSG")
+          plan_key=$key
+        fi
         if [ "$seq" != "$last" ]; then
           printf '%s' "$seq" >&3 2>/dev/null
           last=$seq
