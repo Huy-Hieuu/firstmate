@@ -1394,12 +1394,14 @@ fm_backend_rex_tty_write() { # <target> <bytes>
 # is permission|question|auth for blocked; <title> is the record's label (the
 # task's tab label). Refuses a block that does not carry the task's scoped
 # label, so a mark can never land on another pane. With <notify-title>, the
-# same write raises a desktop notification whose body is <msg>.
-fm_backend_rex_mark() { # <target> <state> [kind] [msg] [expected-label] [notify-title] [title]
+# same write raises a desktop notification whose body is <notify-body>, or
+# <msg> when no body is given, so the record can carry a short label while
+# the notification carries the full note.
+fm_backend_rex_mark() { # <target> <state> [kind] [msg] [expected-label] [notify-title] [title] [notify-body]
   local bytes
   fm_backend_rex_target_ready "$1" "${5:-}" || return 1
   bytes=$(fm_backend_rex_status_sequence "$2" "$FM_BACKEND_REX_MARK_ID" "${3:-}" "${4:-}" "${7:-}")
-  [ -z "${6:-}" ] || bytes="$bytes$(fm_backend_rex_notify_sequence "$6" "${4:-}")"
+  [ -z "${6:-}" ] || bytes="$bytes$(fm_backend_rex_notify_sequence "$6" "${8:-${4:-}}")"
   fm_backend_rex_tty_write "$1" "$bytes"
 }
 

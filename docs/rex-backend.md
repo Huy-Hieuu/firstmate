@@ -123,25 +123,27 @@ Opt-in: with `config/rex-status-marks` set to `on`, the captain sees which worke
 
 | Worker status | Record | Message |
 | --- | --- | --- |
-| `needs-decision`, or a captain hold | `blocked`, kind `question` | `Needs your decision: <note>` |
-| `blocked` naming a credential or login | `blocked`, kind `auth` | `Blocked: <note>` |
-| other `blocked` | `blocked`, kind `permission` | `Blocked: <note>` |
-| `failed` | `error` | `Failed: <note>` |
-| `done` with a PR URL | `done` | `PR ready: <note>` |
-| other `done` | `done` | `Done: <note>` |
+| `needs-decision`, or a captain hold | `blocked`, kind `question` | `Needs your decision` |
+| `blocked` naming a credential or login | `blocked`, kind `auth` | `Blocked` |
+| other `blocked` | `blocked`, kind `permission` | `Blocked` |
+| `failed` | `error` | `Failed` |
+| `done` with a PR URL | `done` | `PR ready` |
+| other `done` | `done` | `Done` |
 | anything else | removed | |
 
+The record's message is only that short state label, at most 20 characters, so it fits the Rex sidebar without scrolling.
 Each record's title is the task's tab label, `fm-<id>`, so Rex labels it with the name Firstmate gave the tab rather than a branch or the agent's terminal title.
 Each new record that needs the captain also carries an OSC 777 desktop notification titled with the tab label, because Rex sounds and notifications follow each pane's root program status, not a child record.
+The notification's body is the full note, the label followed by the worker's status note (for example `Needs your decision: <note>`), clipped to 100 characters, so it still says what the mark is about.
 The attention-mark writer never writes the root record: the harness or the [worker-side status bridge](configuration.md#osc-7501-worker-status-reporting) owns it, and a second root report for the same turn makes Rex notify twice.
 Firstmate's own records - attention marks and the bridge's `app=firstmate-<harness>` root record - never count as the worker's state, for busy detection or for push escalation.
-The notification fires once per change, never on a repeated sync.
+The notification fires once per change of state, kind, or full note - so a new note under the same label notifies again - never on a repeated sync or on the repair of a dropped record.
 Rex has no API to set a record, so the mark is one small write to the pane's terminal device; a `working` or `blocked` record is dropped when the agent's shell prints its next prompt or exits, and the next sync writes it again.
 The watcher runs `fm-rex-marks.sh sync` once per poll only while `config/rex-status-marks` or `config/rex-tint` exists or a cached record remains, and cleanup clears a cached mark before closing the pane.
 Every write addresses the task's recorded block id, so a mark never lands on another pane.
 
 `config/rex-status-marks` turns the marks `on` or `off` (the default when the file is absent, so a home that never creates it sees no change); turning them off clears every mark and progress record already shown.
-`state/.rex-mark-<id>` caches the last mark so a sync writes only on change.
+`state/.rex-mark-<id>` caches the last mark's state, kind, and full note so a sync writes only on change.
 
 ### Validation progress
 

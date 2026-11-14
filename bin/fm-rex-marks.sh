@@ -15,13 +15,17 @@
 #   done                             -> done ("PR ready" when the note has a URL)
 #   anything else                    -> clear (no record)
 #
-# The record's msg is the status note, clipped, and its title is the task's
-# tab label, fm-<task>. Rex then shows the tab's
-# blocked symbol, session-picker indicator, Activity sidebar entry, and Dock
-# badge. Because the app notifies only for a pane's main program status, a
-# mark that changes to a new non-clear state also carries one OSC 777 desktop
-# notification titled with the tab label; a repair of a dropped record does
-# not notify again.
+# The record's msg is only the short state label (Needs your decision,
+# Blocked, Failed, PR ready, or Done; at most 20 characters) so it fits the
+# Rex sidebar without scrolling, and its title is the task's tab label,
+# fm-<task>. The full note - the label, a colon, and the status note, clipped
+# to FM_REX_MARKS_NOTE_MAX - goes only into the desktop notification. Rex then
+# shows the tab's blocked symbol, session-picker indicator, Activity sidebar
+# entry, and Dock badge. Because the app notifies only for a pane's main
+# program status, a mark whose state, kind, or full note changes to a new
+# non-clear value also carries one OSC 777 desktop notification titled with
+# the tab label whose body is the full note; a repair of a dropped record
+# does not notify again.
 #
 # Validation progress: while a no-mistakes ship's mark is clear and the
 # no-mistakes run on its branch is in flight, the task also gets a working
@@ -57,9 +61,11 @@
 #   fm-rex-marks.sh sync [<task>]
 #   fm-rex-marks.sh clear <task>
 #
-# plan prints "<task>\t<state>\t<kind>\t<msg>" per recorded rex task without
-# contacting Rex. sync keeps per-task caches: state/.rex-mark-<task> holds
-# "<state>\t<kind>\t<msg>" of the last mark it wrote, state/.rex-progress-<task>
+# plan prints "<task>\t<state>\t<kind>\t<msg>\t<note>" per recorded rex task
+# without contacting Rex, where <msg> is the record's short label and <note>
+# the notification's full note. sync keeps per-task caches:
+# state/.rex-mark-<task> holds "<state>\t<kind>\t<note>" of the last mark it
+# wrote, state/.rex-progress-<task>
 # holds "<percent>\t<msg>" of the last planned progress (`clear` when none),
 # and state/.rex-tint-<task> holds "<target>\t<color>" of the tint it wrote. A
 # task whose planned and cached records are clear costs no Rex call;
@@ -194,12 +200,14 @@ load_backend() {
   BACKEND_LOADED=1
 }
 
-# plan_mark <task> <kind>: sets P_STATE, P_KIND, and P_MSG.
+# plan_mark <task> <kind>: sets P_STATE, P_KIND, P_MSG (the record's short
+# state label), and P_NOTE (the label and status note, for the notification).
 plan_mark() {
   local line verb note held
   P_STATE=clear
   P_KIND=
   P_MSG=
+  P_NOTE=
   load_status_libs || return 0
   line=$(status_current_line "$STATE/$1.status" "$2" 2>/dev/null) || line=
   verb=$(status_line_verb "$line" 2>/dev/null) || verb=
@@ -211,27 +219,28 @@ plan_mark() {
     needs-decision | "$held")
       P_STATE=blocked
       P_KIND=question
-      P_MSG="Needs your decision: $note"
+      P_MSG="Needs your decision"
       ;;
     blocked)
       P_STATE=blocked
       P_KIND=permission
       if printf '%s' "$note" | grep -Eiq "$FM_REX_MARKS_AUTH_RE"; then P_KIND=auth; fi
-      P_MSG="Blocked: $note"
+      P_MSG="Blocked"
       ;;
     failed)
       P_STATE=error
-      P_MSG="Failed: $note"
+      P_MSG="Failed"
       ;;
     done)
       P_STATE="done"
       case "$note" in
-        *https://*) P_MSG="PR ready: $note" ;;
-        *) P_MSG="Done: $note" ;;
+        *https://*) P_MSG="PR ready" ;;
+        *) P_MSG="Done" ;;
       esac
       ;;
   esac
-  P_MSG=${P_MSG:0:$FM_REX_MARKS_NOTE_MAX}
+  [ -z "$P_MSG" ] || P_NOTE="$P_MSG: $note"
+  P_NOTE=${P_NOTE:0:$FM_REX_MARKS_NOTE_MAX}
 }
 
 # plan_progress <task> <kind> <meta>: sets G_PCT ("clear" for no record, empty
@@ -312,16 +321,17 @@ EOF
 }
 
 # sync_mark <channel> <task> <target> <title>: converge the mark planned in
-# P_STATE, P_KIND, and P_MSG.
+# P_STATE, P_KIND, P_MSG, and P_NOTE. The cache keeps the full note, so a
+# changed note under the same label still writes and notifies.
 sync_mark() {
-  local mode=$1 task=$2 target=$3 title=$4 cache cached='' c_state c_kind c_msg live live_want want notify=
+  local mode=$1 task=$2 target=$3 title=$4 cache cached='' c_state c_kind c_note live live_want want notify=
   cache=$(cache_path "$task")
   [ ! -f "$cache" ] || cached=$(head -1 "$cache" 2>/dev/null)
   # cut, not `IFS=$'\t' read`: a tab is IFS whitespace, so read would collapse
   # an empty kind and shift the message into its place.
   c_state=$(printf '%s' "$cached" | cut -f1)
   c_kind=$(printf '%s' "$cached" | cut -f2)
-  c_msg=$(printf '%s' "$cached" | cut -f3)
+  c_note=$(printf '%s' "$cached" | cut -f3)
   [ -n "$c_state" ] || c_state=clear
   if [ "$mode" = off ] || [ "$P_STATE" = clear ]; then
     if [ "$c_state" = clear ]; then
@@ -335,7 +345,7 @@ sync_mark() {
     rm -f "$cache"
     return 0
   fi
-  want="$P_STATE"$'\t'"$P_KIND"$'\t'"$P_MSG"
+  want="$P_STATE"$'\t'"$P_KIND"$'\t'"$P_NOTE"
   live=$(fm_backend_rex_mark_read "$target") || return 1
   if [ "$P_STATE" = clear ]; then
     live_want=$'clear\t\t\t\t'
@@ -343,11 +353,11 @@ sync_mark() {
     live_want="$P_STATE"$'\t'"$P_KIND"$'\t'"$(fm_backend_rex_status_text "$P_MSG" "$FM_BACKEND_REX_MSG_MAX")"
     live_want="$live_want"$'\t'"$(fm_backend_rex_status_text "$title" "$FM_BACKEND_REX_TITLE_MAX")"$'\t'
   fi
-  if [ "$live" != "$live_want" ]; then
-    if [ "$P_STATE" != clear ] && [ "$P_STATE $P_KIND $P_MSG" != "$c_state $c_kind $c_msg" ]; then
-      notify=$title
-    fi
-    fm_backend_rex_mark "$target" "$P_STATE" "$P_KIND" "$P_MSG" "fm-$task" "$notify" "$title" || return 1
+  if [ "$P_STATE" != clear ] && [ "$want" != "$c_state"$'\t'"$c_kind"$'\t'"$c_note" ]; then
+    notify=$title
+  fi
+  if [ "$live" != "$live_want" ] || [ -n "$notify" ]; then
+    fm_backend_rex_mark "$target" "$P_STATE" "$P_KIND" "$P_MSG" "fm-$task" "$notify" "$title" "$P_NOTE" || return 1
   fi
   if [ "$P_STATE" = clear ]; then
     rm -f "$cache"
@@ -438,7 +448,7 @@ cmd_plan() {
 $record
 EOF
     plan_mark "$task" "$kind"
-    printf '%s\t%s\t%s\t%s\n' "$task" "$P_STATE" "$P_KIND" "$P_MSG"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$task" "$P_STATE" "$P_KIND" "$P_MSG" "$P_NOTE"
   done
 }
 

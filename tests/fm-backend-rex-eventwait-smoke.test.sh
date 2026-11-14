@@ -112,7 +112,7 @@ mark_record() {  # the block's Firstmate record as "<state>|<kind>|<title>|<msg>
     | jq -r '[.records[] | select(.app == "firstmate")] | first // empty | "\(.state)|\(.kind)|\(.title)|\(.msg)"'
 }
 marks sync || fail "the marks sync failed on a real Rex block"
-[ "$(mark_record)" = "blocked|question|fm-evmark|Needs your decision: pick a database" ] \
+[ "$(mark_record)" = "blocked|question|fm-evmark|Needs your decision" ] \
   || fail "Rex must record Firstmate's mark on the task's pane, got '$(mark_record)'"
 pass "real rex: an opt-in attention mark is one app=firstmate record on the task's pane, titled with its tab label"
 
@@ -125,7 +125,7 @@ printf '%s\n' "blocked [at=1700000100]: needs a GitHub login" >"$STATE/evmark.st
 marks sync || fail "the marks rewrite failed"
 wait "$WPID"
 [ "$(cat "$RCF")" = 1 ] || fail "a Firstmate mark rewritten during the wait must not escalate, got rc=$(cat "$RCF") rec=$(cat "$OUT")"
-[ "$(mark_record)" = "blocked|auth|fm-evmark|Blocked: needs a GitHub login" ] || fail "the rewritten mark must be live, got '$(mark_record)'"
+[ "$(mark_record)" = "blocked|auth|fm-evmark|Blocked" ] || fail "the rewritten mark must be live, got '$(mark_record)'"
 pass "real rex: a Firstmate mark rewritten during a wait never escalates, through the real event reader"
 
 ( fm_backend_wait_transition rex "$SM" 10 "$STATE" "$TM" >"$OUT"; echo $? >"$RCF" ) &
