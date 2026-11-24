@@ -779,7 +779,7 @@ status_event_recorded() {  # <status-file> <new-status-line>
 #   resolved       corr=<16 hex> [key=texte-du-mur]: <how it was decided>
 # and a recovery turn can leave two such tokens on one line. All of those must
 # read as the bare verb, in BOTH directions: a verb parse that keeps the token
-# glued on matches no arm of _fm_decision_fold_line, so the opener never opens
+# glued on matches no arm of _fm_decision_line_transition, so the opener never opens
 # and the closer never closes, and a captain decision goes silently missing.
 # Recognition starts only AFTER the retained leading verb: a token-first line
 # keeps that token, so its following word cannot impersonate a transition and
@@ -944,13 +944,6 @@ $1
 EOF
   if [ "$#" -gt 2 ]; then printf -v "$3" '%s' "${__fm_drop_out%$'\n'}"; else printf '%s' "$__fm_drop_out"; fi
 }
-# Fold ONE status line into an existing "<key>\t<verb>\t<note>\n"-per-line open
-# set, applying the same needs-decision/blocked-opens, resolved/captain-held-closes
-# rule status_open_decisions documents above. Pure text transform, no file I/O.
-# This is the ONE place the per-line open/resolved rule is written; both the
-# whole-file fold (status_open_decisions) and the incremental cursor-backed fold
-# (status_open_decisions_incremental) below call this instead of re-deriving the
-# rule, so the two consumption strategies can never drift apart on semantics.
 # Reserved decision-key namespaces, and the rule that makes them mean something.
 #
 # A key like `pending-reply-<id>` names a decision that one library raises and is
@@ -1021,12 +1014,17 @@ _fm_decision_fold_emit() {  # <value> [<out-var>]
   printf -v "$2" '%s' "$__fm_emit_value"
 }
 
-# An optional <out-var> receives the folded set without forking, so a whole-file
-# fold costs no process per status line; it must not be named like a local here.
-# A caller that wants the out-var without the timed view passes '' as [timed].
-_fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind> [timed] [<out-var>]
-  local open=$1 line=$2 resolve=$3 held=$4 kind=$5 timed=${6:-} out=${7-}
-  local verb key note unstamped epoch stated until old_key old_verb old_epoch old_note
+# Classify ONE status line as a decision-set transition, without touching any
+# set. Sets __fm_dt_action to none, reset (a ship/scout terminal declaration
+# supersedes every open decision), open, or close, and for open/close also
+# __fm_dt_key, __fm_dt_verb and __fm_dt_note. This is the ONE place the per-line
+# open/resolved rule is written; the whole-file fold (status_open_decisions) and
+# the incremental cursor-backed fold (status_open_decisions_incremental, through
+# _fm_decision_fold_line) both apply its verdict instead of re-deriving the
+# rule, so the two consumption strategies can never drift apart on semantics.
+_fm_decision_line_transition() {  # <status-line> <resolve-verb> <held-verb> <kind>
+  local line=$1 resolve=$2 held=$3 kind=$4 unstamped
+  __fm_dt_action=none
   # Both colon tests below ask where the head ends, the same question the note
   # and key readers ask, so they read the same unstamped copy those readers do.
   # A worker-written time tag must never decide whether a decision opens or
@@ -1044,22 +1042,44 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
   # both folds on a status log of ordinary width. Same verdict, bounded cost.
   case "$unstamped" in
     *:*|*\[key=*\]*) ;;
-    *) _fm_decision_fold_emit "$open" "$out"; return 0 ;;
+    *) return 0 ;;
   esac
-  status_line_verb "$line" verb
+  status_line_verb "$line" __fm_dt_verb
   case "$unstamped" in
-    *:*) case "$verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) _fm_decision_fold_emit '' "$out"; return 0 ;; esac ;;
+    *:*) case "$__fm_dt_verb:$kind" in done:ship|done:scout|failed:ship|failed:scout) __fm_dt_action=reset; return 0 ;; esac ;;
   esac
-  case "$verb" in
-    needs-decision|blocked|"$resolve"|"$held") ;;
-    *) _fm_decision_fold_emit "$open" "$out"; return 0 ;;
+  case "$__fm_dt_verb" in
+    needs-decision|blocked) __fm_dt_action=open ;;
+    "$resolve"|"$held") __fm_dt_action=close ;;
+    *) return 0 ;;
   esac
-  _fm_decision_key "$line" default key || { _fm_decision_fold_emit "$open" "$out"; return 0; }
-  status_line_note "$line" note
-  _fm_decision_key_transition_allowed "$key" "$note" \
-    || { _fm_decision_fold_emit "$open" "$out"; return 0; }
-  case "$verb" in
-    needs-decision|blocked)
+  if ! _fm_decision_key "$line" default __fm_dt_key; then
+    __fm_dt_action=none
+    return 0
+  fi
+  status_line_note "$line" __fm_dt_note
+  _fm_decision_key_transition_allowed "$__fm_dt_key" "$__fm_dt_note" || __fm_dt_action=none
+  return 0
+}
+
+# Fold ONE status line into an existing "<key>\t<verb>\t<note>\n"-per-line open
+# string set, applying _fm_decision_line_transition's verdict. Pure text
+# transform, no file I/O.
+# An optional <out-var> receives the folded set without forking, so a per-line
+# caller pays no process per status line; it must not be named like a local here.
+# A caller that wants the out-var without the timed view passes '' as [timed].
+_fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> <kind> [timed] [<out-var>]
+  local open=$1 line=$2 resolve=$3 held=$4 kind=$5 timed=${6:-} out=${7-}
+  local verb key note epoch stated until old_key old_verb old_epoch old_note
+  local __fm_dt_action __fm_dt_key __fm_dt_verb __fm_dt_note
+  _fm_decision_line_transition "$line" "$resolve" "$held" "$kind"
+  case "$__fm_dt_action" in
+    none) _fm_decision_fold_emit "$open" "$out"; return 0 ;;
+    reset) _fm_decision_fold_emit '' "$out"; return 0 ;;
+  esac
+  verb=$__fm_dt_verb key=$__fm_dt_key note=$__fm_dt_note
+  case "$__fm_dt_action" in
+    open)
       if [ "$timed" = timed ]; then
         # The timed view adds emission-time and deferral-date columns, without
         # changing any open/closed rule. Keyless or unstamped events have
@@ -1091,7 +1111,7 @@ EOF
       [ -n "$open" ] && open="${open}"$'\n'
       open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
       ;;
-    "$resolve"|"$held")
+    close)
       _fm_decision_drop "$open" "$key" open
       [ -n "$open" ] && open="${open}"$'\n'
       ;;
@@ -1114,21 +1134,44 @@ EOF
 # subprocess read, which exists for that function's much narrower payload-driven
 # path resolution rather than this directory-local glob.
 status_open_decisions() {  # <status-file> [<kind>]
-  local f=$1 kind=${2:-} line resolve held open='' folded verb
+  local f=$1 kind=${2:-} line resolve held verb index next=0 separator=''
+  local __fm_dt_action __fm_dt_key __fm_dt_verb __fm_dt_note
+  local -a keys rows
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
   kind=$(_fm_status_kind "$f" "$kind")
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  keys=() rows=()
+  # The open set lives in two parallel indexed arrays rather than the string set
+  # _fm_decision_fold_line carries, so each transition costs a scan of short
+  # keys instead of a rewrite of the whole set. Pattern operations on a large
+  # string are slow enough under bash 3.2 that the string form made this fold
+  # cost tens of seconds on a secondmate's long-lived log. Ascending indexes
+  # keep the most-recently-opened-last order.
   while IFS= read -r line || [ -n "$line" ]; do
     status_line_verb "$line" verb
     case "$verb" in
-      needs-decision|blocked|done|failed|"$resolve"|"$held")
-        _fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$kind" '' folded
-        open=$folded
-        ;;
+      needs-decision|blocked|done|failed|"$resolve"|"$held") ;;
+      *) continue ;;
     esac
+    _fm_decision_line_transition "$line" "$resolve" "$held" "$kind"
+    case "$__fm_dt_action" in
+      none) continue ;;
+      reset) keys=() rows=(); continue ;;
+    esac
+    for index in ${keys[@]+"${!keys[@]}"}; do
+      [ "${keys[index]}" != "$__fm_dt_key" ] || unset "keys[index]" "rows[index]"
+    done
+    if [ "$__fm_dt_action" = open ]; then
+      keys[next]=$__fm_dt_key
+      rows[next]=$__fm_dt_key$'\t'$__fm_dt_verb$'\t'$__fm_dt_note
+      next=$((next + 1))
+    fi
   done < "$f"
-  printf '%s' "$open"
+  for index in ${rows[@]+"${!rows[@]}"}; do
+    printf '%s%s' "$separator" "${rows[index]}"
+    separator=$'\n'
+  done
 }
 
 # Resolve the log's current declaration at one boundary for crew-state consumers.
@@ -2404,7 +2447,7 @@ _fm_status_open_activities_stream() {
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   pause=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
-    # Blank-line guard; see _fm_decision_fold_line for why this is a glob.
+    # Blank-line guard; see _fm_decision_line_transition for why this is a glob.
     case "$line" in
       *[![:space:]]*) ;;
       *) continue ;;

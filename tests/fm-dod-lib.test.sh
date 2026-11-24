@@ -308,6 +308,29 @@ test_moved_branch_without_named_head_is_refused() {
   pass "a moved remote branch that lacks the named head is refused"
 }
 
+test_memoized_reachability_follows_ref_moves() {
+  local repo wt state fix_sha main_sha
+  repo="$TMP_ROOT/memo-repo"
+  wt="$TMP_ROOT/memo-wt"
+  state="$TMP_ROOT/memo-state"
+  mkdir -p "$state"
+  fm_git_worktree "$repo" "$wt" fm/memo
+  main_sha=$(git -C "$repo" rev-parse main)
+  git -C "$wt" commit -q --allow-empty -m 'fix not yet pushed'
+  fix_sha=$(git -C "$wt" rev-parse HEAD)
+  accept_done ship direct-PR "$wt" "$repo" 'done: PR https://example.test/o/r/pull/9' "$state" memo >/dev/null \
+    && fail "unpushed direct-PR done: was accepted"
+  accept_done ship direct-PR "$wt" "$repo" 'done: PR https://example.test/o/r/pull/9' "$state" memo >/dev/null \
+    && fail "a repeated read of an unpushed done: was accepted"
+  git -C "$wt" update-ref refs/remotes/origin/fm/memo "$fix_sha"
+  accept_done ship direct-PR "$wt" "$repo" 'done: PR https://example.test/o/r/pull/9' "$state" memo >/dev/null \
+    || fail "a remembered refusal survived the push that made the named head reachable"
+  git -C "$wt" update-ref refs/remotes/origin/fm/memo "$main_sha"
+  accept_done ship direct-PR "$wt" "$repo" 'done: PR https://example.test/o/r/pull/9' "$state" memo >/dev/null \
+    && fail "a remembered acceptance survived the ref moving off the named head"
+  pass "remembered reachability verdicts follow every ref move under the tested namespace"
+}
+
 test_no_mistakes_prevalidation_done_is_not_gated() {
   local repo wt
   repo="$TMP_ROOT/preval-repo"
@@ -686,6 +709,7 @@ test_remote_hanging_before_origin_leaves_origin_its_refresh
 test_hanging_copy_remote_leaves_the_project_clone_its_refresh
 test_local_only_branch_beside_gate_mirror_is_accepted
 test_moved_branch_without_named_head_is_refused
+test_memoized_reachability_follows_ref_moves
 test_free_text_sha_is_not_the_named_head
 test_recorded_merged_pr_is_landed_after_prune
 test_merge_marker_binds_to_the_named_pr

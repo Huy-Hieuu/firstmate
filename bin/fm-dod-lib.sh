@@ -756,20 +756,45 @@ EOF
 # refs that match the optional <excluded-ref-glob>.
 # --contains tests that exact commit, so a branch that moved to a different
 # tip does not count.
+# On a large repository that walk costs seconds, and current-state readers
+# repeat it on every observation of a done: that is not yet reachable. When
+# FM_DOD_REF_CACHE_DIR names a directory, the verdict is memoized there under
+# the query and the namespace's current ref tips: commits are immutable, so the
+# verdict can change only when a ref under <namespace> moves, and any move
+# recomputes it.
 fm_dod_ref_contains() {  # <repo> <ref-namespace> <sha> [<excluded-ref-glob>]
-  local repo=$1 ns=$2 sha=$3 exclude=${4:-} refs ref
+  local repo=$1 ns=$2 sha=$3 exclude=${4:-} refs ref cache_dir=${FM_DOD_REF_CACHE_DIR:-} entry='' tips='' cached tmp verdict=1
   [ -n "$repo" ] && [ -d "$repo" ] || return 1
   [ -n "$sha" ] || return 1
+  if [ -n "$cache_dir" ] && [ -d "$cache_dir" ] \
+    && entry=$(printf '%s\n' "$repo" "$ns" "$exclude" "$sha" | git hash-object --stdin 2>/dev/null) \
+    && tips=$(git -C "$repo" for-each-ref --format='%(objectname) %(refname)' "$ns" 2>/dev/null) \
+    && tips=$(printf '%s\n' "$tips" | git hash-object --stdin 2>/dev/null) \
+    && [ -n "$entry" ] && [ -n "$tips" ]; then
+    entry="$cache_dir/$entry"
+    cached=$(cat "$entry" 2>/dev/null) || cached=
+    case "$cached" in
+      "$tips 0") return 0 ;;
+      "$tips 1") return 1 ;;
+    esac
+  else
+    entry=
+  fi
   refs=$(git -C "$repo" for-each-ref --format='%(refname)' --contains="$sha" "$ns" 2>/dev/null) || return 1
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
     # shellcheck disable=SC2254 # the exclusion is a glob by contract
     [ -n "$exclude" ] && case "$ref" in $exclude) continue ;; esac
-    return 0
+    verdict=0
+    break
   done <<EOF
 $refs
 EOF
-  return 1
+  if [ -n "$entry" ] && tmp=$(mktemp "$entry.XXXXXX" 2>/dev/null); then
+    { printf '%s %s\n' "$tips" "$verdict" > "$tmp" && mv -f -- "$tmp" "$entry"; } 2>/dev/null \
+      || rm -f -- "$tmp" 2>/dev/null
+  fi
+  return "$verdict"
 }
 
 # 0 when a done: note reports the no-mistakes CI-ready PR (`PR <url> checks
@@ -1164,10 +1189,17 @@ fm_dod_named_head_reachable_outside_worktree() {  # <worktree> <project> <mode> 
 # the claim is refused; stdout then holds a one-line reason and no other
 # output. <state> <id> <meta> supply pr=,
 # pr_head=, and the merge-notified marker; <meta> may be a captured copy
-# (bin/fm-fleet-snapshot.sh), so the marker is read from <state>.
+# (bin/fm-fleet-snapshot.sh), so the marker is read from <state>. A <state>
+# also hosts the fm_dod_ref_contains memo in <state>/.dod-ref-contains unless
+# the caller already set FM_DOD_REF_CACHE_DIR.
 fm_dod_accept_ship_done() {  # <kind> <mode> <worktree> <project> <line> [<state> <id> <meta> [meta-locked]]
   local kind=$1 mode=$2 wt=$3 project=$4 line=$5 state=${6:-} id=${7:-} meta=${8:-} url sha gerrit captured=''
   fm_dod_should_gate_ship_done "$kind" "$mode" "$line" || return 0
+  local FM_DOD_REF_CACHE_DIR=${FM_DOD_REF_CACHE_DIR:-}
+  if [ -z "$FM_DOD_REF_CACHE_DIR" ] && [ -n "$state" ] && [ -d "$state" ]; then
+    FM_DOD_REF_CACHE_DIR="$state/.dod-ref-contains"
+    mkdir -p "$FM_DOD_REF_CACHE_DIR" 2>/dev/null || FM_DOD_REF_CACHE_DIR=
+  fi
   if [ "$mode" = local-only ] && [ -n "$meta" ]; then
     captured=$(cat "$meta") || return 1
     if [ "$(fm_dod_meta_value "$meta" worktree)" != "$wt" ] \
