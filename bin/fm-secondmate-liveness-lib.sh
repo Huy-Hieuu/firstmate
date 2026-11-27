@@ -6,8 +6,9 @@
 # library so classification handling and the guarded relaunch path stay
 # single-sourced here.
 #
-# A secondmate's recorded endpoint is the tmux window, herdr pane, T3 thread,
-# or remote peer it runs in. Probing classifies that endpoint through the owning
+# A secondmate's recorded endpoint is the tmux window, herdr pane, Orca
+# terminal, T3 thread, or remote peer it runs in. Probing classifies that
+# endpoint through the owning
 # backend adapter's fm_backend_agent_state (local) or the remote control script's
 # state verb (remote), which returns one of:
 #

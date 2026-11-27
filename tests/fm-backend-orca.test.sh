@@ -340,16 +340,17 @@ test_send_key_refuses_unknown_key() {
   pass "fm_backend_orca_send_key: refuses unsupported keys loudly"
 }
 
-test_send_key_refuses_escape_until_supported() {
-  local out status
+test_send_key_maps_escape_and_ctrl_u_to_raw_bytes() {
   orca_case send-key-escape
-  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
-    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_send_key term-123 Escape' "$ROOT" 2>&1 )
-  status=$?
-  [ "$status" -ne 0 ] || fail "send_key should refuse Escape until Orca exposes a real Escape primitive"
-  assert_contains "$out" "unsupported Orca key 'Escape'" "send_key did not name Escape as unsupported"
-  [ ! -s "$LOG" ] || fail "unsupported Escape should not call orca terminal send"
-  pass "fm_backend_orca_send_key: refuses Escape instead of mapping it to interrupt"
+  PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    bash -c '. "$0/bin/backends/orca.sh"; fm_backend_orca_send_key term-123 Escape && fm_backend_orca_send_key term-123 C-u' "$ROOT"
+  expect_code 0 $? "send_key should deliver Escape and C-u"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-123'$'\x1f''--text'$'\x1f'$'\033'$'\x1f''--json' \
+    "Escape should be sent as the raw ESC byte"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''send'$'\x1f''--terminal'$'\x1f''term-123'$'\x1f''--text'$'\x1f'$'\025'$'\x1f''--json' \
+    "C-u should be sent as the raw NAK byte"
+  assert_not_contains "$(cat "$LOG")" '--interrupt' "Escape must never be mapped to Orca's interrupt"
+  pass "fm_backend_orca_send_key: Escape and C-u go out as raw terminal bytes"
 }
 
 test_kill_is_best_effort_close() {
@@ -571,31 +572,48 @@ test_spawn_writes_orca_metadata_and_launches_harness() {
   pass "fm-spawn.sh --backend orca: reuses implicit terminal, records metadata, launches harness"
 }
 
-test_spawn_refuses_orca_secondmate_before_home_mutation() {
-  local home subhome data state config id out status
+test_spawn_orca_secondmate_refuses_unreadable_home_sessions_before_terminal() {
+  local home subhome subhome_real data state config id out status
   id="orcasmz1"
-  home="$TMP_ROOT/secondmate-refusal-home"
-  subhome="$TMP_ROOT/secondmate-refusal-subhome"
+  orca_case secondmate-unreadable
+  home="$CASE_DIR/home"
+  subhome="$CASE_DIR/subhome"
   data="$home/data"
   state="$home/state"
   config="$home/config"
   mkdir -p "$data" "$state" "$config" "$subhome/bin" "$subhome/data" "$subhome/state" "$subhome/projects"
+  subhome_real=$(cd "$subhome" && pwd -P)
   printf '%s\n' "$id" > "$subhome/.fm-secondmate-home"
   printf 'firstmate\n' > "$subhome/AGENTS.md"
   printf 'claude\n' > "$config/crew-harness"
   touch "$state/.last-watcher-beat"
+  FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_SECONDMATE_CHARTER="Exercise an Orca secondmate." \
+    "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null \
+    || fail "could not scaffold the secondmate charter"
+  # 1: the home is not yet an Orca project; 2: registering it; 3: its main
+  # worktree; 4: the session inventory read fails.
+  printf '1\n' > "$RESP/1.exit"
+  printf '{"ok":true,"result":{"repo":{"id":"repo-sm"}}}\n' > "$RESP/2.out"
+  printf '{"ok":true,"result":{"worktree":{"id":"repo-sm::%s","path":"%s"}}}\n' "$subhome_real" "$subhome_real" > "$RESP/3.out"
+  printf '1\n' > "$RESP/4.exit"
   set +e
-  out=$( FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
-    FM_PROJECTS_OVERRIDE="$home/projects" FM_SPAWN_NO_GUARD=1 \
+  out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
+    FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_DATA_OVERRIDE="$data" FM_CONFIG_OVERRIDE="$config" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_SPAWN_NO_GUARD=1 HOME="$SPAWN_HOME" CLAUDE_CONFIG_DIR='' \
     "$ROOT/bin/fm-spawn.sh" "$id" "$subhome" claude --backend orca --secondmate 2>&1 )
   status=$?
-  set +e
-  [ "$status" -ne 0 ] || fail "backend=orca --secondmate should be refused"
-  assert_contains "$out" "backend=orca does not support --secondmate spawns yet" \
-    "orca secondmate refusal should happen at backend selection"
-  assert_absent "$subhome/config/crew-harness" \
-    "orca secondmate refusal should not propagate inherited local material into the secondmate home"
-  pass "fm-spawn.sh --backend orca --secondmate: refuses before secondmate-home mutation"
+  [ "$status" -ne 0 ] || fail "an Orca secondmate spawn whose home sessions cannot be read should refuse"$'\n'"$out"
+  assert_contains "$out" "agent state reads 'unreadable'" \
+    "the refusal should name the unreadable home session state"$'\n'"$out"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''repo'$'\x1f''add'$'\x1f''--path'$'\x1f'"$subhome_real" \
+    "the secondmate home should be registered as its own Orca project"
+  assert_not_contains "$(cat "$LOG")" $'orca\x1f''worktree'$'\x1f''create' \
+    "an Orca secondmate must never get a new Orca worktree"
+  assert_not_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''create' \
+    "no terminal may open beside sessions whose agent state is unknown"
+  assert_absent "$state/$id.meta" "a refused Orca secondmate spawn must not publish a record"
+  [ -d "$subhome" ] || fail "a refused Orca secondmate spawn must keep the home"
+  pass "fm-spawn.sh --backend orca --secondmate: registers the home project and refuses before opening a terminal beside unreadable sessions"
 }
 
 test_spawn_refuses_orca_when_runtime_not_ready() {
@@ -820,12 +838,17 @@ test_peek_and_crew_state_fail_closed_on_orca_error_json() {
   [ "$status" -ne 0 ] || fail "fm-peek should fail when Orca reports a stale terminal"
   assert_contains "$out" "terminal handle stale" "fm-peek should surface the Orca read error message"
   printf '{"ok":false,"error":{"code":"terminal_handle_stale","message":"terminal handle stale"}}\n' > "$RESP/2.out"
+  # After the failed read, the recovery-grade classifier asks Orca about the
+  # terminal itself; a handle Orca no longer knows reads as gone.
+  printf '{"ok":false,"error":{"code":"terminal_handle_stale","message":"terminal handle stale"}}\n' > "$RESP/3.out"
   out=$( PATH="$FB:$PATH" FM_ORCA_LOG="$LOG" FM_ORCA_RESPONSES="$RESP" \
     FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$state" "$ROOT/bin/fm-crew-state.sh" "$id" )
   assert_contains "$out" "state: unknown" "crew-state should not treat an Orca read error as a live endpoint"
   assert_contains "$out" "backend target gone: term-stale" "crew-state should report the stale Orca terminal as gone"
   assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''read'$'\x1f''--terminal'$'\x1f''term-stale' \
     "fm-peek/fm-crew-state did not read the recorded Orca terminal"
+  assert_contains "$(cat "$LOG")" $'orca\x1f''terminal'$'\x1f''show'$'\x1f''--terminal'$'\x1f''term-stale' \
+    "fm-crew-state did not classify the recorded Orca terminal"
   pass "fm-peek/fm-crew-state: Orca read error JSON fails closed"
 }
 
@@ -1526,7 +1549,7 @@ test_send_text_submit_reports_send_failed
 test_send_helpers_reject_orca_error_json
 test_send_key_enter_and_interrupt
 test_send_key_refuses_unknown_key
-test_send_key_refuses_escape_until_supported
+test_send_key_maps_escape_and_ctrl_u_to_raw_bytes
 test_kill_is_best_effort_close
 test_kill_refuses_when_the_orca_cli_is_absent
 test_remove_worktree_refuses_empty_id
@@ -1538,7 +1561,7 @@ test_worktree_and_terminal_helpers_parse_json
 test_worktree_create_removes_worktree_when_path_missing
 test_spawn_preserves_orca_metadata_when_pathless_worktree_cleanup_fails
 test_spawn_writes_orca_metadata_and_launches_harness
-test_spawn_refuses_orca_secondmate_before_home_mutation
+test_spawn_orca_secondmate_refuses_unreadable_home_sessions_before_terminal
 test_spawn_refuses_orca_when_runtime_not_ready
 test_spawn_refuses_orca_nonisolated_worktree
 test_spawn_removes_orca_worktree_when_terminal_create_fails

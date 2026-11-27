@@ -6,6 +6,7 @@
 #        fm-control.sh <task-id> exit
 #        fm-control.sh <task-id> relaunch [--harness <name>] [--model <name>]
 #                                         [--effort <level>] [--account <entry>]
+#                                         [--backend orca]
 #                                         (--note <text> | --note-file <path>)
 #
 # Why this exists, and how it differs from fm-send.sh. bin/fm-send.sh is the
@@ -99,6 +100,12 @@
 #              keeps its conversation, so a new turn or a provider change on
 #              it continues the same agent rather than a fresh one
 #              (fm_control_backend_relaunch_supported).
+#              --backend orca moves a secondmate recorded on tmux onto Orca:
+#              the old agent is stopped and proven stopped exactly as for any
+#              relaunch, then the launch owner opens a terminal in the home's
+#              Orca project, republishes the record on it, and closes the old
+#              tmux window. It is the one supported backend move; any other
+#              kind or backend pair is refused before anything is stopped.
 #              --note is required for a ship or scout, whose replacement
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
@@ -133,12 +140,11 @@
 # Fail-closed boundaries:
 #   - An unverified harness, or a harness whose control mechanics are unknown,
 #     is refused rather than guessed at.
-#   - A backend that cannot deliver the harness's interrupt key is refused
-#     (Orca's terminal API has no Escape).
+#   - A backend that cannot deliver the harness's interrupt key is refused.
 #   - `exit` and `relaunch` require a backend with a recovery-grade agent-state
-#     classifier (tmux, herdr, rex, or t3code), because without one the "the
-#     agent stopped" postcondition cannot be proven. Relaunch also requires
-#     replacement support, which t3code lacks. zellij, orca, cmux, paseo, and tern are
+#     classifier (tmux, herdr, rex, orca, or t3code), because without one the
+#     "the agent stopped" postcondition cannot be proven. Relaunch also requires
+#     replacement support, which t3code lacks. zellij, cmux, paseo, and tern are
 #     refused rather than reported as successful blind.
 #   - An ambiguous or unreadable endpoint state refuses; only a positively
 #     classified state acts (a Rex `unreadable` first goes through the absence
@@ -276,6 +282,8 @@ EFFORT_SET=0
 ACCOUNT_SET=0
 NOTE=
 NOTE_SET=0
+NEW_BACKEND=
+BACKEND_SET=0
 control_want_value=
 for control_arg in "$@"; do
   if [ -n "$control_want_value" ]; then
@@ -288,6 +296,7 @@ for control_arg in "$@"; do
       effort) NEW_EFFORT=$control_arg; EFFORT_SET=1 ;;
       account) NEW_ACCOUNT=$control_arg; ACCOUNT_SET=1 ;;
       note) NOTE=$control_arg; NOTE_SET=1 ;;
+      backend) NEW_BACKEND=$control_arg; BACKEND_SET=1 ;;
       note_file)
         [ -f "$control_arg" ] || die "--note-file '$control_arg' is not a readable file"
         NOTE=$(cat "$control_arg")
@@ -309,6 +318,8 @@ for control_arg in "$@"; do
     --note) control_want_value=note ;;
     --note=*) NOTE=${control_arg#--note=}; NOTE_SET=1 ;;
     --note-file) control_want_value=note_file ;;
+    --backend) control_want_value=backend ;;
+    --backend=*) NEW_BACKEND=${control_arg#--backend=}; BACKEND_SET=1 ;;
     --note-file=*)
       [ -f "${control_arg#--note-file=}" ] || die "--note-file '${control_arg#--note-file=}' is not a readable file"
       NOTE=$(cat "${control_arg#--note-file=}")
@@ -323,9 +334,10 @@ if [ -n "$control_want_value" ]; then
 fi
 
 if [ "$VERB" != relaunch ]; then
-  [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$ACCOUNT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] \
-    || die "--harness, --model, --effort, --account, and --note apply to 'relaunch' only"
+  [ "$HARNESS_SET" = 0 ] && [ "$MODEL_SET" = 0 ] && [ "$EFFORT_SET" = 0 ] && [ "$ACCOUNT_SET" = 0 ] && [ "$NOTE_SET" = 0 ] && [ "$BACKEND_SET" = 0 ] \
+    || die "--harness, --model, --effort, --account, --backend, and --note apply to 'relaunch' only"
 fi
+[ "$BACKEND_SET" = 0 ] || [ -n "$NEW_BACKEND" ] || die "--backend requires a non-empty value"
 [ "$ACCOUNT_SET" = 0 ] || [ -n "$NEW_ACCOUNT" ] || die "--account requires a non-empty value"
 [ "$HARNESS_SET" = 0 ] || [ -n "$NEW_HARNESS" ] || die "--harness requires a non-empty value"
 [ "$MODEL_SET" = 0 ] || [ -n "$NEW_MODEL" ] || die "--model requires a non-empty value"
@@ -885,6 +897,7 @@ TARGET_HARNESS=$HARNESS
 TARGET_MODEL=
 TARGET_EFFORT=
 TARGET_ACCOUNT=
+TARGET_BACKEND=$BACKEND
 
 journal_write() {  # <phase> [extra-line]...
   local phase=$1
@@ -904,6 +917,7 @@ journal_write() {  # <phase> [extra-line]...
     echo "to_harness=$TARGET_HARNESS"
     echo "to_model=$TARGET_MODEL"
     echo "to_effort=$TARGET_EFFORT"
+    echo "to_backend=$TARGET_BACKEND"
     local line
     for line in "$@"; do
       echo "$line"
@@ -1062,8 +1076,18 @@ resolve_relaunch_profile() {
   if [ "$TARGET_EFFORT" = ultra ]; then
     "$SCRIPT_DIR/fm-harness.sh" validate-native-effort "$TARGET_HARNESS" "$TARGET_MODEL" "$TARGET_EFFORT" || return 1
   fi
+  # The launch owner refuses these harnesses off tmux and herdr, but only after
+  # the old agent has stopped; refuse here while nothing has changed yet.
+  case "$TARGET_HARNESS" in
+    commandcode|cortex)
+      case "$TARGET_BACKEND" in
+        tmux|herdr) ;;
+        *) die "$TARGET_HARNESS is verified on the tmux and herdr backends only; refusing a relaunch onto backend=$TARGET_BACKEND before the current worker stops" ;;
+      esac
+      ;;
+  esac
   if [ "$TARGET_HARNESS" = hermes ]; then
-    [ "$BACKEND" = tmux ] || die 'Hermes is verified on tmux only; refusing before the current worker stops'
+    [ "$TARGET_BACKEND" = tmux ] || die 'Hermes is verified on tmux only; refusing before the current worker stops'
     [ "$TARGET_MODEL" = default ] || die 'Hermes models are profile-owned; relaunch requires the default model axis'
     # shellcheck source=bin/fm-hermes-lib.sh
     . "$SCRIPT_DIR/fm-hermes-lib.sh"
@@ -1224,6 +1248,17 @@ do_relaunch() {
   require_state_verified_backend relaunch
   fm_control_backend_relaunch_supported "$BACKEND" \
     || die "task $ID runs on the $BACKEND backend, where a thread keeps its conversation and a new turn or provider change continues the same agent, so no fresh replacement can be launched into its endpoint; 'interrupt' ends its turn, and a fresh task needs a teardown and a new dispatch"
+  # The one supported backend move (header): checked, and the Orca runtime
+  # proven ready, before the old agent is touched. The launch owner repeats
+  # the same check against the record it locks.
+  if [ "$BACKEND_SET" = 1 ] && [ "$NEW_BACKEND" != "$BACKEND" ]; then
+    [ "$KIND" = secondmate ] && [ "$BACKEND" = tmux ] && [ "$NEW_BACKEND" = orca ] \
+      || die "relaunch --backend $NEW_BACKEND would move $KIND $ID off its recorded $BACKEND backend; the only supported backend move is a secondmate from tmux to orca"
+    fm_backend_validate_spawn "$NEW_BACKEND" || exit 1
+    fm_backend_source "$NEW_BACKEND" || exit 1
+    fm_backend_runtime_check "$NEW_BACKEND" || exit 1
+    TARGET_BACKEND=$NEW_BACKEND
+  fi
   resolve_relaunch_profile
 
   case "$KIND" in
@@ -1269,6 +1304,7 @@ do_relaunch() {
   [ "$TARGET_MODEL" = default ] || spawn_args+=(--model "$TARGET_MODEL")
   [ "$TARGET_EFFORT" = default ] || spawn_args+=(--effort "$TARGET_EFFORT")
   [ -z "$TARGET_ACCOUNT" ] || spawn_args+=(--account "$TARGET_ACCOUNT")
+  [ "$TARGET_BACKEND" = "$BACKEND" ] || spawn_args+=(--backend "$TARGET_BACKEND")
   if FM_CONTROL_RELAUNCH_TX="$RELAUNCH_TX" \
       "$SCRIPT_DIR/fm-spawn.sh" "${spawn_args[@]}" >/dev/null; then
     RELAUNCH_META_PUBLISHED=1
@@ -1286,6 +1322,9 @@ do_relaunch() {
     if fm_backend_validate_task_endpoint "$META" "$ID" >/dev/null \
        && [ -n "$FM_BACKEND_VALIDATED_TARGET" ]; then
       T=$FM_BACKEND_VALIDATED_TARGET
+      # A backend move republished the record on the new backend.
+      BACKEND=$FM_BACKEND_VALIDATED_BACKEND
+      fm_backend_source "$BACKEND" || exit 1
     else
       die "the replacement agent for $ID was launched, but task $ID's republished record no longer passes endpoint validation (the refusal above names the row), so this transaction cannot say which endpoint to confirm it on; reconcile $META before any further control action"
     fi

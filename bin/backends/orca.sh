@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # bin/backends/orca.sh - the Orca terminal session-provider adapter.
 #
-# Orca owns both the task worktree and the terminal endpoint. Escape key support
-# remains unsupported until Orca exposes a terminal-send primitive for it.
+# Orca owns both the task worktree and the terminal endpoint. A secondmate's
+# home is registered as its own Orca project instead, and its terminal opens in
+# that project's main worktree (fm_backend_orca_home_worktree_ensure). Orca's
+# terminal API names only an interrupt and an Enter; Escape and the Ctrl+U
+# composer clear are delivered as their raw single bytes through `--text`, which
+# Orca writes to the pty unchanged (verified live, Orca 1.4.278).
 #
 # Target string shape: the Orca terminal id accepted by `orca terminal ...`.
 
@@ -11,6 +15,9 @@
 # every backend so the decision cannot drift.
 # shellcheck source=bin/fm-composer-lib.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/../fm-composer-lib.sh"
+# Shared harness-process identity for the recovery-grade agent-state reading.
+# shellcheck source=bin/fm-agent-process-lib.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/../fm-agent-process-lib.sh"
 
 fm_backend_orca_tool_check() {
   command -v orca >/dev/null 2>&1 || { echo "error: backend=orca selected but the 'orca' CLI is not installed" >&2; return 1; }
@@ -96,7 +103,7 @@ process.stdout.write(assignments.join(" "), "latin1");
 JS
 }
 
-fm_backend_orca_json_get() {  # <field> ; fields: worktree-id worktree-path terminal-handle worktree-terminal-handle repo-id
+fm_backend_orca_json_get() {  # <field> ; fields: worktree-id worktree-path terminal-handle worktree-terminal-handle repo-id repo-path
   # Terminal handles are accepted only from verified terminal result shapes:
   # result.terminal or a root terminal object with .handle. Undocumented
   # result.id and result.worktree.terminal shapes are ignored until a real Orca
@@ -129,6 +136,7 @@ if (field === "worktree-path") v = wt.path || (wt.git && wt.git.path) || r.path 
 if (field === "terminal-handle") v = handle(explicitTerm || r) || "";
 if (field === "worktree-terminal-handle") v = handle(explicitTerm) || "";
 if (field === "repo-id") v = repo.id || repo.repoId || r.repoId || "";
+if (field === "repo-path") v = (r.repo || r.repository || {}).path || "";
 if (!v) process.exit(1);
 process.stdout.write(String(v));
 ' "$field"
@@ -421,6 +429,12 @@ fm_backend_orca_send_key() {  # <terminal-id> <key>
     Enter|enter)
       fm_backend_orca_run_json orca terminal send --terminal "$terminal" --text "" --enter --json
       ;;
+    Escape|escape|Esc)
+      fm_backend_orca_run_json orca terminal send --terminal "$terminal" --text $'\033' --json
+      ;;
+    C-u|ctrl+u|Ctrl-u|Ctrl-U)
+      fm_backend_orca_run_json orca terminal send --terminal "$terminal" --text $'\025' --json
+      ;;
     *)
       echo "error: unsupported Orca key '$key'" >&2
       return 1
@@ -453,4 +467,204 @@ fm_backend_orca_send_text_submit() {  # <terminal-id> <text> <retries> <enter-sl
 fm_backend_orca_kill() {  # <terminal-id>
   fm_backend_orca_tool_check || return 1
   orca terminal close --terminal "$1" --json >/dev/null 2>&1 || true
+}
+
+# fm_backend_orca_home_worktree_ensure: the Orca worktree a secondmate home's
+# terminal opens in. The home is Orca's main worktree of a project registered
+# at the home itself (`orca repo add` is idempotent), so its id is Orca's own
+# `<repo id>::<real path>` composite and Firstmate never asks Orca to create or
+# remove a worktree for it. Orca records the real path (/tmp homes read
+# /private/tmp on macOS), so the lookup uses the resolved path and refuses a
+# result whose path is not exactly the home.
+fm_backend_orca_home_worktree_ensure() {  # <home-dir> -> worktree id
+  local home=$1 real out wt_id wt_path
+  fm_backend_orca_tool_check || return 1
+  real=$(cd "$home" 2>/dev/null && pwd -P) || {
+    echo "error: secondmate home $home cannot be resolved for Orca" >&2
+    return 1
+  }
+  out=$(orca worktree show --worktree "path:$real" --json 2>/dev/null) || out=
+  if ! wt_id=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id 2>/dev/null); then
+    out=$(orca repo add --path "$real" --json) || {
+      printf '%s' "$out" | fm_backend_orca_json_ok || true
+      echo "error: orca repo add failed for secondmate home $real" >&2
+      return 1
+    }
+    printf '%s' "$out" | fm_backend_orca_json_ok || return 1
+    out=$(orca worktree show --worktree "path:$real" --json) || {
+      echo "error: Orca has no worktree for secondmate home $real after registering it" >&2
+      return 1
+    }
+    wt_id=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-id) || {
+      echo "error: orca worktree show did not return a worktree id for $real" >&2
+      return 1
+    }
+  fi
+  wt_path=$(printf '%s' "$out" | fm_backend_orca_json_get worktree-path 2>/dev/null) || wt_path=
+  if [ "$wt_path" != "$real" ] || [ "${wt_id#*::}" != "$real" ]; then
+    echo "error: Orca resolved secondmate home $real to worktree '$wt_id' at '${wt_path:-unknown}'; refusing to open the secondmate anywhere else" >&2
+    return 1
+  fi
+  printf '%s' "$wt_id"
+}
+
+# fm_backend_orca_home_forget: drop the Orca project a retired secondmate home
+# was registered as, after the home itself is gone. Only a project whose own
+# root is exactly the recorded home path is forgotten, so a home that Orca
+# shows as one worktree of a larger project never removes that project.
+# `setup-delete --force` forgets saved workspace details and keeps files. The
+# id comes from an already validated task record.
+fm_backend_orca_home_forget() {  # <worktree-id>
+  local wt_id=${1:-} repo_id path out repo_path
+  case "$wt_id" in ?*::/*) ;; *) return 0 ;; esac
+  repo_id=${wt_id%%::*}
+  path=${wt_id#*::}
+  fm_backend_orca_tool_check || return 1
+  out=$(orca repo show --repo "id:$repo_id" --json 2>/dev/null) || return 0
+  repo_path=$(printf '%s' "$out" | fm_backend_orca_json_get repo-path 2>/dev/null) || return 0
+  [ "$repo_path" = "$path" ] || return 0
+  fm_backend_orca_run_json orca project setup-delete --setup "$repo_id" --force --json >/dev/null
+}
+
+# fm_backend_orca_session_state: classify one Orca pty session from the process
+# table. Orca reports each session's process (a `login` wrapper on macOS, whose
+# child is the interactive shell); the shell's terminal foreground process
+# group is what the user sees running. Any verified harness in that group is
+# `alive`, a group of nothing but shells is `dead`, anything else is
+# `ambiguous`, and a table or foreground read that fails is `unreadable`.
+fm_backend_orca_session_state() {  # <session-pid> -> alive|dead|ambiguous|unreadable
+  local session=$1 table shell_pid tpgid pid ppid pgid tp comm args argv0 seen=0 other=0 shell=0
+  case "$session" in ''|*[!0-9]*) printf 'unreadable'; return 0 ;; esac
+  table=$(LC_ALL=C ps -A -o pid=,ppid=,pgid=,tpgid=,comm= 2>/dev/null) || { printf 'unreadable'; return 0; }
+  shell_pid=
+  tpgid=
+  while read -r pid ppid pgid tp comm; do
+    [ "$pid" = "$session" ] || continue
+    if [ "$(fm_agent_process_classify_name "$comm")" = shell ]; then
+      shell_pid=$pid
+      tpgid=$tp
+    fi
+    break
+  done <<EOF
+$table
+EOF
+  if [ -z "$shell_pid" ]; then
+    while read -r pid ppid pgid tp comm; do
+      [ "$ppid" = "$session" ] || continue
+      shell_pid=$pid
+      tpgid=$tp
+      break
+    done <<EOF
+$table
+EOF
+  fi
+  case "$tpgid" in ''|*[!0-9]*|0) printf 'unreadable'; return 0 ;; esac
+  while read -r pid ppid pgid tp comm; do
+    [ "$pgid" = "$tpgid" ] || continue
+    seen=1
+    args=$(LC_ALL=C ps -p "$pid" -o args= 2>/dev/null) || args=
+    args=${args#"${args%%[![:space:]]*}"}
+    argv0=${args%%[[:space:]]*}
+    case "$(fm_agent_process_classify "$comm" "$argv0" "$args" "$pid")" in
+      agent) printf 'alive'; return 0 ;;
+      shell) shell=1 ;;
+      *) other=1 ;;
+    esac
+  done <<EOF
+$table
+EOF
+  if [ "$seen" -eq 0 ]; then
+    printf 'unreadable'
+  elif [ "$other" -eq 0 ] && [ "$shell" -eq 1 ]; then
+    printf 'dead'
+  else
+    printf 'ambiguous'
+  fi
+}
+
+# fm_backend_orca_session_pids: the process id Orca reports for each live pty
+# session, from `orca diagnostics memory`. With a pty id, only that session;
+# with `worktree:<id>`, every session in that worktree. Fails when the
+# inventory cannot be read.
+fm_backend_orca_session_pids() {  # <pty-id|worktree:<id>>
+  local selector=$1 out
+  out=$(orca diagnostics memory --json 2>/dev/null) || return 1
+  printf '%s' "$out" | node -e '
+const fs = require("fs");
+const sel = process.argv[1];
+let data;
+try { data = JSON.parse(fs.readFileSync(0, "utf8")); } catch (err) { process.exit(2); }
+if (data.ok === false || !data.result || !Array.isArray(data.result.worktrees)) process.exit(2);
+for (const w of data.result.worktrees) {
+  for (const s of (Array.isArray(w.sessions) ? w.sessions : [])) {
+    const hit = sel.startsWith("worktree:") ? w.worktreeId === sel.slice(9) : s.sessionId === sel;
+    if (hit && Number.isInteger(s.pid)) console.log(s.pid);
+  }
+}
+' "$selector"
+}
+
+# fm_backend_orca_agent_state: recovery-grade agent state for one terminal (see
+# bin/fm-backend.sh's fm_backend_agent_state for the vocabulary). `orca terminal
+# show` names the terminal's pty; a closed or exited terminal reads
+# `orphaned`, and a handle the running Orca no longer knows reads
+# `terminal_handle_stale` - both are `missing`. The pty's process is then
+# located in Orca's session inventory and classified by its foreground process
+# group (fm_backend_orca_session_state). A connected pty with no inventory
+# entry, or any read that fails, is `unreadable`, never death.
+fm_backend_orca_agent_state() {  # <terminal-id>
+  local terminal=$1 out shown pty pids pid
+  fm_backend_orca_tool_check 2>/dev/null || { printf 'unreadable'; return 0; }
+  out=$(orca terminal show --terminal "$terminal" --json 2>/dev/null) || true
+  shown=$(printf '%s' "$out" | node -e '
+const fs = require("fs");
+let data;
+try { data = JSON.parse(fs.readFileSync(0, "utf8")); } catch (err) { console.log("unreadable"); process.exit(0); }
+if (data.ok === false) {
+  const code = data.error && data.error.code;
+  console.log(code === "terminal_handle_stale" || code === "terminal_not_found" ? "missing" : "unreadable");
+  process.exit(0);
+}
+const t = (data.result || {}).terminal;
+if (!t || typeof t !== "object") { console.log("unreadable"); process.exit(0); }
+if (t.orphaned === true) { console.log("missing"); process.exit(0); }
+if (typeof t.ptyId !== "string" || !t.ptyId || /[\t\n]/.test(t.ptyId)) { console.log("unreadable"); process.exit(0); }
+console.log("pty\t" + t.ptyId);
+') || shown=unreadable
+  case "$shown" in
+    missing|unreadable) printf '%s' "$shown"; return 0 ;;
+    pty$'\t'?*) pty=${shown#pty$'\t'} ;;
+    *) printf 'unreadable'; return 0 ;;
+  esac
+  pids=$(fm_backend_orca_session_pids "$pty") || { printf 'unreadable'; return 0; }
+  pid=$(printf '%s\n' "$pids" | sed -n '1p')
+  if [ -z "$pid" ] || [ "$(printf '%s\n' "$pids" | grep -c .)" -ne 1 ]; then
+    printf 'unreadable'
+    return 0
+  fi
+  fm_backend_orca_session_state "$pid"
+}
+
+# fm_backend_orca_worktree_agent_state: whether any live pty session in one Orca
+# worktree runs a harness agent: `none` when every session is shell-only or
+# there are none, `alive` when one holds an agent, and `ambiguous` or
+# `unreadable` otherwise. A secondmate respawn checks its home this way before
+# opening a new terminal, so an agent left running in a terminal whose handle
+# went stale is never joined by a second one.
+fm_backend_orca_worktree_agent_state() {  # <worktree-id>
+  local wt_id=$1 pids pid state verdict=none
+  fm_backend_orca_tool_check 2>/dev/null || { printf 'unreadable'; return 0; }
+  pids=$(fm_backend_orca_session_pids "worktree:$wt_id") || { printf 'unreadable'; return 0; }
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    state=$(fm_backend_orca_session_state "$pid")
+    case "$state" in
+      alive) printf 'alive'; return 0 ;;
+      dead) ;;
+      *) verdict=$state ;;
+    esac
+  done <<EOF
+$pids
+EOF
+  printf '%s' "$verdict"
 }

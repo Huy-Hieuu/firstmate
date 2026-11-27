@@ -1051,7 +1051,7 @@ fm_backend_source() {  # <name>
       set -- fm-backend-hometag-lib.sh fm-composer-lib.sh
       ;;
     orca)
-      set -- fm-composer-lib.sh
+      set -- fm-composer-lib.sh fm-agent-process-lib.sh fm-session-lock-lib.sh fm-gemini-lib.sh fm-hermes-process-lib.sh
       ;;
     cmux|paseo)
       set -- fm-backend-hometag-lib.sh fm-composer-lib.sh
@@ -1534,12 +1534,15 @@ fm_backend_target_exists() {  # <backend> <target> [expected-label]
 # `dead` here (issue #4115) - then maps a positively stopped session server to
 # `missing` only in this recovery-grade view. The Rex adapter classifies its
 # structured process view (foreground process and ancestors) through the same
-# shared classifier and reads a structured not-found as `missing`. Zellij
-# remains unverified because
-# its secondmate ghost-tab and agent-process recovery path has not been
-# empirically validated. Orca, cmux, paseo, and tern do not support secondmate
-# spawns. The t3code adapter maps the thread's V2 status through its one status
-# table (bin/backends/t3code.sh); there is no process to attribute locally.
+# shared classifier and reads a structured not-found as `missing`. The Orca
+# adapter locates the terminal's pty in Orca's session inventory and classifies
+# that session shell's foreground process group through the same shared
+# classifier; a closed terminal or a handle the running Orca no longer knows
+# reads `missing`. Zellij remains unverified because its secondmate ghost-tab
+# and agent-process recovery path has not been empirically validated. cmux,
+# paseo, and tern do not support secondmate spawns. The t3code adapter maps the
+# thread's V2 status through its one status table (bin/backends/t3code.sh);
+# there is no process to attribute locally.
 # Tern answers through the same process classifier from `tern process`, but
 # bin/fm-control-lib.sh's fm_control_backend_state_verified does not list it, so
 # no control-plane verb treats a Tern verdict as proof that an agent stopped.
@@ -1552,6 +1555,7 @@ fm_backend_agent_state() {  # <backend> <target>
     tmux) fm_backend_tmux_agent_state "$target" ;;
     herdr) fm_backend_herdr_agent_state "$target" ;;
     rex) fm_backend_rex_agent_state "$target" ;;
+    orca) fm_backend_orca_agent_state "$target" ;;
     t3code) fm_backend_t3code_agent_state "$target" ;;
     tern) fm_backend_tern_agent_state "$target" ;;
     hc) fm_backend_hc_agent_state "$target" ;;

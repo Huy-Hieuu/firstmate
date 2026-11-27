@@ -1577,24 +1577,24 @@ if ! pane_readable "$BACKEND_TARGET"; then
   #             normal flow below instead of being discarded.
   #   anything else - the cheap probes themselves failed to answer or
   #             contradicted themselves, which is unknown, never death.
-  # t3code answers from the server's own session status through the same
-  # contract. Backends with no classifier (orca, zellij, cmux, and paseo all
-  # report unverified, and tern's classifier is not promoted to recovery grade)
-  # keep their historical capture-failure-means-gone reading.
+  # t3code and orca answer through the same contract. Backends with no
+  # classifier (zellij, cmux, and paseo report unverified, and tern's
+  # classifier is not promoted to recovery grade) keep their historical
+  # capture-failure-means-gone reading.
   case "$TASK_BACKEND" in
-    tmux|herdr|rex|t3code) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
+    tmux|herdr|rex|t3code|orca) AGENT_STATE=$(fm_backend_agent_state "$TASK_BACKEND" "$BACKEND_TARGET") ;;
     *) AGENT_STATE=none ;;
   esac
   case "$TASK_BACKEND:$AGENT_STATE" in
-    tmux:alive|herdr:alive|rex:alive|t3code:alive)
+    tmux:alive|herdr:alive|rex:alive|t3code:alive|orca:alive)
       ;;
-    tmux:missing|herdr:missing|rex:missing|t3code:missing)
+    tmux:missing|herdr:missing|rex:missing|t3code:missing|orca:missing)
       emit unknown none "backend target gone: $BACKEND_TARGET"
       ;;
-    tmux:dead|herdr:dead|rex:dead|t3code:dead)
+    tmux:dead|herdr:dead|rex:dead|t3code:dead|orca:dead)
       emit unknown none "backend target gone: $BACKEND_TARGET (agent gone, pane shell remains)"
       ;;
-    tmux:*|herdr:*|rex:*|t3code:*)
+    tmux:*|herdr:*|rex:*|t3code:*|orca:*)
       emit unknown none "backend unreachable ($TASK_BACKEND endpoint state: $AGENT_STATE)"
       ;;
     *)

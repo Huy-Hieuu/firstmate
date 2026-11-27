@@ -7,7 +7,7 @@ Firstmate agents load [`firstmate-orca`](../.agents/skills/firstmate-orca/SKILL.
 ## Setup
 
 Pick Orca when you already use the Orca macOS app and want Orca-managed worktrees and terminals instead of Treehouse plus a session multiplexer.
-Orca is macOS-only, explicit-only, and does not support secondmate spawns.
+Orca is macOS-only and explicit-only.
 
 Prerequisites:
 
@@ -24,7 +24,7 @@ No manual repository registration is required.
 
 Open the Orca app to watch a task's terminal.
 Routine supervision uses the recorded endpoint through `bin/fm-peek.sh <id>` and `FM_HOME=<home> bin/fm-send.sh <id> '<text>'`.
-Enter and Ctrl-C are supported; Escape is not.
+Enter, Ctrl-C, Escape, and Ctrl-U are supported; Escape and Ctrl-U travel as raw terminal bytes.
 
 `config/launch-env-allowlist` alone cannot scope worker credentials on Orca, because allowlisted values resolve from the Orca terminal's own environment.
 When scoped worker credentials live in a tmux session, configure the [Orca environment source](configuration.md#orca-environment-source-configlaunch-env-tmux-session).
@@ -49,6 +49,34 @@ Orca returns `orca_worktree_id=` as that composite of the Orca repo id and the w
 
 `orca_worktree_id=` is issued by Orca and recorded verbatim, so firstmate treats it as an opaque selector and accepts both the legacy bare-id form and the current `<repo-id>::<absolute-worktree-path>` compound form, whose path half may contain spaces and ordinary filesystem punctuation.
 A recorded id that is empty, whitespace-fringed, control-character-bearing, ambiguously double-separated, or non-absolute in its path half is refused as malformed and the task state is preserved.
+
+## Secondmates
+
+A secondmate on Orca shows up in the Orca app as its own project.
+`fm-spawn.sh <id> <home> --secondmate --backend orca`, or a home whose `config/backend` is `orca`, registers the secondmate home itself with `orca repo add --path` and opens one terminal in that project's main worktree.
+Firstmate never creates or removes an Orca worktree for a secondmate.
+The agent runs directly in that terminal, never inside tmux, so its terminal title stays visible to Orca.
+
+```text
+backend=orca
+window=fm-<id>
+terminal=<orca terminal handle>
+orca_worktree_id=<orca repo id>::<absolute home path>
+worktree=<absolute home path>
+home=<absolute home path>
+```
+
+The secondmate lifecycle works as it does on tmux.
+`bin/fm-control.sh <id> interrupt|exit|relaunch`, `fm-send.sh` doorbells, `fm-crew-state.sh`, and the watcher's liveness tick all read the recorded terminal.
+Agent state comes from the terminal's pty: `orca terminal show` names it, Orca's session inventory (`orca diagnostics memory`) names its process, and that shell's foreground process group decides `alive`, `dead`, or `ambiguous`.
+A closed terminal, or a handle the running Orca no longer knows, reads `missing`.
+That never proves the agent gone, so `exit` and `relaunch` refuse it, and the session-start liveness sweep respawns the secondmate instead.
+The respawn, like every Orca secondmate launch, refuses while any session in the home's Orca project still runs an agent or cannot be read, so a terminal whose handle went stale is never joined by a second supervisor.
+Retirement through `fm-teardown.sh` closes the terminal, removes the home, and then forgets the home's Orca project with `orca project setup-delete --force`, which keeps files on disk; a failure to forget only warns.
+
+An existing tmux secondmate moves to Orca in place with `bin/fm-control.sh <id> relaunch --backend orca`.
+The move proves the tmux agent stopped first, opens the Orca terminal, republishes the record on it, and only then closes the old tmux window ([`agent-control.md`](agent-control.md#transactional-relaunch)).
+It is the only backend move; ships and scouts keep the backend they were dispatched on.
 
 ## Current lifecycle and safety
 
@@ -77,8 +105,8 @@ Reinstall the CLI and rerun; [`verification/runtime-backends.md`](verification/r
 
 - Orca is macOS-only and explicit-only.
 - The app must be running and report ready.
-- Secondmate spawns are unsupported.
-- Escape is unsupported.
+- The away-mode supervision daemon (`bin/fm-supervise-daemon.sh`) does not run on an Orca supervisor, so a secondmate on Orca supervises its own fleet through its ordinary session.
+- A secondmate's Orca terminal that Orca no longer knows cannot be reclaimed in place; the liveness respawn opens a new one after the home's sessions read agent-free.
 - Orca exposes no stable CLI version or protocol marker, so readiness is the compatibility gate rather than a version floor.
 - Only the verified terminal-handle and worktree result fields are accepted; speculative response shapes are rejected.
 - Orca's worktree shape is unverified against the spawn-time Claude workspace-trust check in `bin/fm-claude-trust.sh`, which refuses any path that is not a linked git worktree sharing the project's git common dir, so a claude spawn on Orca fails loudly at that check rather than launching if Orca clones instead of linking.

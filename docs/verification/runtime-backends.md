@@ -2400,6 +2400,38 @@ Without `tmux -u`, tmux's non-UTF-8 client output sanitized a multiline UTF-8 va
 A name present only in the server-global environment, or only as text inside another value, was refused.
 The fake-Orca cases execute the real staged launch file under synthetic personal credentials and cover refusal before allocation, file privacy and deletion, deletion-failure refusal that keeps the interactive pane with and without errexit, reclaiming a launch file the pane never ran while the terminal stays open, reclaiming it when HUP, INT or TERM interrupts the spawn after the file is published but before the launch command is sent, during the consume wait, or between text delivery and Enter, a pane that wins the deadline unlink race, and the missing-source warning.
 
+### Orca secondmates
+
+Secondmates on Orca were verified on 2026-11-27 on macOS 26.4.1 with the `orca` CLI 1.4.278 against the running Orca app.
+Two throwaway secondmate homes were seeded under `/tmp` with `bin/fm-home-seed.sh`, launched with `--harness claude --model claude-sonnet-5-5 --effort medium`, and retired with `bin/fm-teardown.sh`.
+
+Observed on the first mate, spawned with `--secondmate --backend orca`:
+
+- The home registered as its own Orca project and the terminal opened in it; `orca terminal show` reported `worktreePath` as the home and `paneTitle` as `fm-<id>`.
+- `fm_backend_agent_state orca` read `alive`, the liveness probe read `already live (backend=orca)`, and `fm-send.sh` delivered a steer the mate answered.
+- `fm-control.sh interrupt` delivered Escape with `verified=agent-alive`, `exit` reported `stopped` with the endpoint reading `dead`, and `relaunch` from that stopped state brought the agent back `alive` on the same terminal.
+- A `relaunch` from a live, idle agent re-resolved the configured omp pin and Orca showed the omp terminal title directly, with no tmux in the terminal's process tree.
+- Closing the terminal in Orca made the endpoint read `missing`; the liveness probe classified it relaunchable and the respawn opened a new terminal reading `alive`.
+- With the record pointed at a handle Orca never issued while the agent still ran, the respawn refused because the home's session read `alive`, and only one terminal existed afterwards.
+- Teardown closed the terminal, removed the home, the records, and the registry line, and Orca then answered `repo_not_found` for the home's project.
+
+One live `relaunch` issued within seconds of the previous relaunch refused with `exit=unconfirmed`: the exit command landed while the new agent's first operational prompt was still being accepted, the transaction restored the original instructions, and the agent kept running.
+The same relaunch succeeded once the agent was idle.
+
+Observed on the second mate, spawned on tmux and moved with `fm-control.sh <id> relaunch --backend orca`:
+
+- The journal reached `phase=complete` with `to_backend=orca`, the record switched to `backend=orca` with a `terminal=` and `orca_worktree_id=` for the home, and no tmux window for the mate remained.
+- The moved mate read `alive` and answered an `fm-send.sh` steer in its Orca terminal.
+
+```sh
+bash tests/fm-backend-orca.test.sh
+bash tests/fm-spawn-orca-worktree.test.sh
+bash tests/fm-control.test.sh
+```
+
+Under Bash 3.2.57 the first two passed in full.
+`tests/fm-control.test.sh` passed every case except its Hermes profile-refusal case, which fails identically on the unchanged base with `args[@]: unbound variable` from `bin/fm-hermes-lib.sh`.
+
 ## cmux
 
 The current compatibility floor is cmux 0.64, and the active live evidence uses 0.64.17 build 97 on macOS aarch64.

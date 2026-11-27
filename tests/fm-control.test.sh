@@ -577,20 +577,14 @@ test_unverified_harness_is_refused() {
 
 test_backend_key_capability_matrix() {
   local backend key
-  for backend in tmux herdr zellij cmux paseo rex tern; do
+  for backend in tmux herdr zellij orca cmux paseo rex tern; do
     # C-u is the composer clear muse's interrupt needs; every session provider
-    # but Orca normalizes it (bin/backends/*.sh).
+    # normalizes it (bin/backends/*.sh; Orca sends Escape and C-u as raw bytes).
     for key in Escape Enter C-c C-u; do
       fm_control_backend_supports_key "$backend" "$key" \
         || fail "$backend should be able to deliver $key"
     done
   done
-  fm_control_backend_supports_key orca Escape \
-    && fail "orca's terminal API has no Escape and must not claim it"
-  fm_control_backend_supports_key orca C-u \
-    && fail "orca's terminal API has no composer clear and must not claim one"
-  fm_control_backend_supports_key orca C-c || fail "orca should deliver C-c"
-  fm_control_backend_supports_key orca Enter || fail "orca should deliver Enter"
   pass "fm-control-lib: the backend key matrix matches each adapter's real send-key surface"
 }
 
@@ -618,23 +612,6 @@ test_harness_kind_capability() {
   fm_control_harness_supports_kind someagent ship \
     && fail "an unverified harness must not claim any kind"
   pass "fm-control-lib: adapter capability is per task kind, not per adapter alone"
-}
-
-test_orca_refuses_an_escape_harness_interrupt() {
-  local dir out rc
-  dir=$(new_case orca-escape)
-  add_task "$dir" t1 claude ship orca "term-1"
-  # Orca records its endpoint as terminal=, which endpoint validation requires.
-  {
-    cat "$dir/home/state/t1.meta"
-    echo "terminal=term-1"
-    echo "orca_worktree_id=wt-1::/orca/wt-1"
-  } > "$dir/home/state/t1.meta.new"
-  sed 's|^window=.*|window=fm-t1|' "$dir/home/state/t1.meta.new" > "$dir/home/state/t1.meta"
-  out=$(run_control "$dir" t1 interrupt); rc=$?
-  expect_code 1 "$rc" "an Escape harness on orca should refuse"
-  assert_contains "$out" "cannot deliver" "refusal should name the undeliverable key"
-  pass "fm-control interrupt: a backend that cannot deliver the harness's key refuses instead of sending another"
 }
 
 test_unverified_state_backends_refuse_stop_verbs() {
@@ -704,6 +681,9 @@ test_commandcode_relaunch_off_tmux_and_herdr_refuses_before_stopping() {
         sed 's|^window=.*|window=fm-t1|' "$dir/home/state/t1.meta" > "$dir/home/state/t1.meta.new"
         printf 'terminal=term-1\norca_worktree_id=wt-1::/orca/wt-1\n' >> "$dir/home/state/t1.meta.new"
         mv "$dir/home/state/t1.meta.new" "$dir/home/state/t1.meta"
+        # Orca is state-verified, so keep this refusal off any real Orca.
+        printf '#!/bin/sh\nexit 1\n' > "$dir/fakebin/orca"
+        chmod +x "$dir/fakebin/orca"
         ;;
     esac
     alive_as "$dir" claude
@@ -744,12 +724,36 @@ test_hermes_profile_refusals_preserve_running_worker() {
   pass 'fm-control relaunch: Hermes profile model and gateway refusals preserve the current worker'
 }
 
-test_state_verified_backends_are_exactly_tmux_herdr_and_rex() {
-  fm_control_backend_state_verified tmux || fail "tmux has a recovery-grade classifier"
-  fm_control_backend_state_verified herdr || fail "herdr has a recovery-grade classifier"
-  fm_control_backend_state_verified rex || fail "rex has a recovery-grade classifier"
+# The one supported backend move is a secondmate from tmux to orca; every other
+# pair has to refuse while the running agent is still untouched.
+test_relaunch_backend_move_refuses_a_ship_before_stopping() {
+  local dir out rc meta_before
+  dir=$(new_case backend-move-ship)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  meta_before=$(cat "$dir/home/state/t1.meta")
+  out=$(run_control "$dir" t1 relaunch --backend orca --note x); rc=$?
+  expect_code 1 "$rc" "a ship backend move should refuse"$'\n'"$out"
+  assert_contains "$out" "the only supported backend move is a secondmate from tmux to orca" \
+    "the refusal should name the one supported move"
+  [ -z "$(literals "$dir")" ] && [ -z "$(keys_sent "$dir")" ] \
+    || fail "a refused backend move must send the running agent nothing"
+  [ "$(cat "$dir/home/state/t1.meta")" = "$meta_before" ] \
+    || fail "a refused backend move must leave the task record unchanged"
+  [ ! -e "$dir/home/state/t1.control-relaunch" ] \
+    || fail "a refused backend move must open no relaunch transaction"
+  out=$(run_control "$dir" t1 exit --backend orca); rc=$?
+  expect_code 1 "$rc" "--backend on exit should refuse"
+  assert_contains "$out" "apply to 'relaunch' only" "--backend should be scoped to relaunch"
+  pass "fm-control relaunch --backend: a move other than secondmate tmux-to-orca refuses before the agent is stopped"
+}
+
+test_state_verified_backends_are_exactly_the_classifying_ones() {
   local backend
-  for backend in zellij orca cmux paseo tern; do
+  for backend in tmux herdr rex orca t3code; do
+    fm_control_backend_state_verified "$backend" || fail "$backend has a recovery-grade classifier"
+  done
+  for backend in zellij cmux paseo tern; do
     fm_control_backend_state_verified "$backend" \
       && fail "$backend has no recovery-grade classifier and must not claim one"
   done
@@ -1339,11 +1343,11 @@ test_relaunch_resume_flag_is_per_adapter_and_reference_owner
 test_prefixed_recorded_harness_reaches_each_control_verb
 test_backend_key_capability_matrix
 test_harness_kind_capability
-test_orca_refuses_an_escape_harness_interrupt
 test_unverified_state_backends_refuse_stop_verbs
 test_commandcode_relaunch_off_tmux_and_herdr_refuses_before_stopping
 test_hermes_profile_refusals_preserve_running_worker
-test_state_verified_backends_are_exactly_tmux_herdr_and_rex
+test_relaunch_backend_move_refuses_a_ship_before_stopping
+test_state_verified_backends_are_exactly_the_classifying_ones
 test_window_label_is_refused_with_the_exact_id
 test_explicit_endpoint_is_refused
 test_unknown_task_is_refused

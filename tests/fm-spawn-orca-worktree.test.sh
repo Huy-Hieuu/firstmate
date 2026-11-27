@@ -13,14 +13,12 @@
 # the worktree Orca actually created, proving the skip does not just avoid an
 # error but lets a genuine Orca launch complete.
 #
-# The matching relaunch-side carve-out at the `[ "$RELAUNCH" -eq 1 ] &&
-# [ "$BACKEND" = orca ]` branch is guarded by an earlier, unconditional gate:
-# fm_control_backend_state_verified (bin/fm-control-lib.sh) only recognizes
-# tmux and herdr as having a recovery-grade agent-state classifier, so any
-# `--relaunch` on backend=orca is refused before that branch can ever run.
-# The second test below pins that refusal so a future change that starts
-# routing orca through the classifier does not silently reach the untested
-# branch without also covering it.
+# The matching relaunch-side path: Orca now has a recovery-grade agent-state
+# classifier, so a `--relaunch` on backend=orca reads its recorded terminal.
+# A terminal handle the running Orca no longer knows reads `missing`, which
+# can never be proven absent (fm_control_endpoint_absence_verdict), so the
+# second test below pins that refusal: a relaunch never opens a second
+# terminal beside one whose agent may still run.
 set -u
 
 # shellcheck source=tests/fixtures.sh
@@ -113,6 +111,10 @@ case "$1 $2" in
   "terminal create")
     printf '{"ok":true,"result":{"terminal":{"handle":"term-1"}}}\n'
     exit 0
+    ;;
+  "terminal show")
+    printf '{"ok":false,"error":{"code":"terminal_handle_stale","message":"terminal handle stale"}}\n'
+    exit 1
     ;;
   "terminal close")
     touch "$DIR/terminal-closed"
@@ -310,7 +312,7 @@ test_orca_create_failure_reports_detail_and_removes_leftover() {
   pass "a failed orca worktree create names Orca's error and removes the clean copy it left"
 }
 
-test_orca_relaunch_is_refused_before_the_worktree_carveout_could_run() {
+test_orca_relaunch_refuses_a_terminal_orca_no_longer_knows() {
   local case_dir home proj wt id=orca-relaunch-a2 out status
   case_dir="$TMP_ROOT/relaunch"
   home="$case_dir/home"
@@ -343,17 +345,21 @@ EOF
     echo "terminal=term-1"
   } > "$home/state/$id.meta"
 
+  fb=$(make_orca_fakebin "$case_dir")
   out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" HOME="$case_dir/user-home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
-    FM_SPAWN_NO_GUARD=1 \
+    FM_SPAWN_NO_GUARD=1 FM_TEST_ORCA_DIR="$case_dir" PATH="$fb:$PATH" \
     "$SPAWN" "$id" --relaunch 2>&1)
   status=$?
 
-  expect_code 1 "$status" "a relaunch against a recorded Orca task should refuse"$'\n'"$out"
-  assert_contains "$out" "no recovery-grade agent-state classifier" \
-    "the refusal should name the missing classifier, proving relaunch never reaches the worktree carve-out"
-  pass "a relaunch against an Orca-backed task is refused before the RELAUNCH+orca worktree carve-out could run"
+  expect_code 1 "$status" "a relaunch against a stale Orca terminal should refuse"$'\n'"$out"
+  assert_contains "$out" "reads 'missing'" \
+    "the refusal should name the missing reading"$'\n'"$out"
+  assert_contains "$out" "does not prove its pty and agent are gone" \
+    "the refusal should say why an Orca missing is not proof of absence"$'\n'"$out"
+  [ ! -e "$case_dir/terminal-closed" ] || fail "a refused relaunch must not close any terminal"
+  pass "a relaunch against an Orca terminal Orca no longer knows refuses instead of opening a second agent"
 }
 
 # Source values are synthetic and deliberately include shell syntax and trailing
@@ -1006,7 +1012,7 @@ test_orca_launch_file_delete_failure_keeps_terminal
 test_orca_pane_wins_launch_file_race_at_deadline
 test_orca_snapshot_keeps_raw_bytes_tmux_reports
 test_orca_fresh_spawn_enters_the_worktree_it_created
-test_orca_relaunch_is_refused_before_the_worktree_carveout_could_run
+test_orca_relaunch_refuses_a_terminal_orca_no_longer_knows
 test_orca_sparse_spawn_adopts_the_copy_firstmate_created
 test_orca_create_failure_reports_detail_and_removes_leftover
 

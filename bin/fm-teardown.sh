@@ -3026,8 +3026,18 @@ t3code_secondmate_home_shutdown_barrier() {  # <home> <task-id>
   reap_task_worktree_processes "secondmate home" "$1"
 }
 
-remove_firstmate_home() {  # <home> <label> <task-id> <backend>
-  local home=$1 label=$2 expected_id=${3:-} backend=${4:-} abs_home_path process_event_backup pool_root
+# A secondmate home on Orca was registered as its own Orca project when its
+# terminal opened (bin/backends/orca.sh fm_backend_orca_home_worktree_ensure).
+# Forget that project once the home is returned or removed. Best-effort: the
+# home is already gone, so a failure only leaves a stale Orca project entry.
+forget_orca_home_project() {  # <orca-worktree-id> <label>
+  [ -n "$1" ] || return 0
+  { fm_backend_source orca && fm_backend_orca_home_forget "$1"; } >/dev/null 2>&1 ||
+    echo "warning: $2 is gone, but its Orca project ${1%%::*} could not be forgotten; remove it from Orca's project list by hand" >&2
+}
+
+remove_firstmate_home() {  # <home> <label> <task-id> <backend> [orca-worktree-id]
+  local home=$1 label=$2 expected_id=${3:-} backend=${4:-} orca_wt=${5:-} abs_home_path process_event_backup pool_root
   [ -n "$home" ] || return 0
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
@@ -3064,11 +3074,13 @@ remove_firstmate_home() {  # <home> <label> <task-id> <backend>
     }
     [ -z "$process_event_backup" ] || rm -rf -- "$process_event_backup"
     remove_secondmate_treehouse_pool "$pool_root"
+    [ "$backend" != orca ] || forget_orca_home_project "$orca_wt" "$label"
     return 0
   fi
   if safe_rm_rf "$abs_home_path" "$label"; then
     [ -z "$process_event_backup" ] || rm -rf -- "$process_event_backup"
     remove_secondmate_treehouse_pool "$pool_root"
+    [ "$backend" != orca ] || forget_orca_home_project "$orca_wt" "$label"
     return 0
   fi
   restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
@@ -3658,7 +3670,8 @@ cleanup_firstmate_home_children() {
       [ -n "$child_home" ] || child_home=$child_wt
       if [ -n "$child_home" ] && [ -d "$child_home" ]; then
         cleanup_firstmate_home_children "$child_home" "$archive_parent/children/$child_id" || return $?
-        remove_firstmate_home "$child_home" "child firstmate home" "$child_id" "$child_backend" || return $?
+        remove_firstmate_home "$child_home" "child firstmate home" "$child_id" "$child_backend" \
+          "$(meta_value "$child_meta" orca_worktree_id)" || return $?
       fi
     elif [ "$child_backend" = orca ]; then
       if [ -n "$child_wt" ] && [ -d "$child_wt" ]; then
@@ -4194,6 +4207,10 @@ if [ "$BACKEND" = rex ] && [ "$KIND" = secondmate ] && [ "$TEARDOWN_WINDOWLESS" 
   ( unset FM_ROOT_OVERRIDE; FM_HOME="$HOME_PATH" FM_ROOT="$HOME_PATH" STATE="$HOME_PATH/state" \
     fm_backend_kill "$BACKEND" "$T" "" "fm-$ID" ) \
     || endpoint_close_refusal "$ID" "$BACKEND" "$T" 1 || exit 1
+elif [ "$BACKEND" = orca ] && [ "$KIND" = secondmate ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
+  # A secondmate's Orca endpoint is only its terminal; the home it opened in is
+  # removed below with the rest of the secondmate home.
+  fm_backend_kill orca "$T" || endpoint_close_refusal "$ID" orca "$T" 1 || exit 1
 elif [ "$BACKEND" != orca ] && [ "$BACKEND" != t3code ] && [ "$BACKEND" != herdr ] && [ "$TEARDOWN_WINDOWLESS" != 1 ]; then
   # Undo Firstmate's own opt-in Rex attention mark, progress, and tint first
   # (bin/fm-rex-marks.sh), so a pane the close cannot reach is not left showing
@@ -4218,7 +4235,7 @@ if [ "$KIND" = secondmate ]; then
     || { echo "error: receiver wake cleanup could not be staged; preserving the secondmate home and route" >&2; exit 1; }
   pending_replies_recovery_validate recheck \
     || { echo "error: local pending-reply recovery paths changed; preserving the secondmate home and route" >&2; exit 1; }
-  if remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" "$BACKEND"; then
+  if remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" "$BACKEND" "$(meta_value "$META" orca_worktree_id)"; then
     :
   else
     rc=$?

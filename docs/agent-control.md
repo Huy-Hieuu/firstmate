@@ -101,6 +101,12 @@ A relaunch does take one session reference when the endpoint's own runtime recor
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
+Moving a secondmate from tmux to Orca is the one backend move, and it is the same transaction with `--backend orca`.
+The move is checked, and Orca's runtime proven ready, before the old agent is touched; a ship, a scout, or any other backend pair refuses there.
+The old tmux agent is then stopped and proven stopped exactly as in step 4, and the launch owner opens one terminal in the secondmate home's own Orca project.
+The republished record names that terminal, and only after it is published is the old tmux window closed.
+A failure before the record is published leaves the secondmate on tmux, where the ordinary rollback applies.
+
 ### Reclaiming a task whose endpoint is gone
 
 A Herdr pane or workspace, or a Rex block, can be destroyed out from under a live task by churn, a session restart, or a stopped Rex server.
@@ -130,6 +136,8 @@ An unreachable endpoint can still hold the live agent a rebind would duplicate, 
 - **tmux cannot.** `list-windows -a` describes only the tmux server the *current process* addresses (its `TMUX_TMPDIR`/socket), and a task record carries no socket identity for its endpoint.
   A different but running server would answer "not anywhere" about a window it was never able to see, so a server-wide read cannot tell a destroyed window from one on a server this process cannot address.
   There is no read available that closes that gap, so tmux always refuses - for a renamed session, a moved window, a foreign socket, and a dead server alike.
+- **Orca cannot.** A closed terminal and a handle the running Orca no longer knows both read `missing`, but neither proves the terminal's pty and agent are gone, so Orca refuses as well.
+  A secondmate on Orca whose terminal is gone is recovered by its own respawn path, which first refuses while any session in the home's Orca project still runs an agent.
 - **T3 Code refuses `exit` before this proof.** Its [native status table](t3code-backend.md#restart-and-liveness-behavior) owns absence and unreadability, including an archived thread whose active run is still draining.
   T3 Code still cannot reclaim the task because a thread keeps its conversation, so no fresh agent can replace it and `relaunch` refuses before this proof can authorize a replacement.
 
@@ -185,12 +193,12 @@ The worktree and the task's records are unaffected either way.
 - An adapter that is not verified for this task's kind is refused **before** the running agent is stopped, not after.
   Muse is a crewmate and scout adapter only, so relaunching a secondmate onto it refuses while its agent is still up rather than leaving that secondmate with no agent when the launch owner refuses.
 - A backend that cannot deliver the harness's interrupt key, or the composer clear that key needs, is refused rather than sent a different key.
-  Orca's terminal API exposes only an interrupt and an Enter, so it can deliver neither Escape nor Ctrl+U.
+  Orca delivers Escape and Ctrl+U as raw terminal bytes.
   T3 Code has no composer, so Escape and Ctrl+C are both a turn interrupt and Ctrl+U is refused.
-- `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux, herdr, rex, and t3code - because without one the "the agent stopped" postcondition cannot be proven.
-  zellij, orca, cmux, and paseo are refused rather than reported as successful blind.
+- `exit` and `relaunch` require a backend with a recovery-grade agent-state classifier - tmux, herdr, rex, orca, and t3code - because without one the "the agent stopped" postcondition cannot be proven.
+  zellij, cmux, and paseo are refused rather than reported as successful blind.
 - On t3code, `exit` refuses before anything is sent: a T3 thread has no composer for a typed exit command, and T3's `/mcp` tools offer no session stop.
-- `relaunch` additionally requires a backend that can host a replacement agent - tmux, herdr, and rex.
+- `relaunch` additionally requires a backend that can host a replacement agent - tmux, herdr, rex, and orca.
   t3code is refused before anything is stopped: a T3 thread keeps its conversation, so a new turn or a provider change on it continues the same agent rather than launching a fresh one.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts; a Rex `unreadable` acts only once the absence proof above settles it.
@@ -211,7 +219,7 @@ Backend capability comes from each adapter's real surface, not from a policy cho
 | herdr | yes | yes | yes | yes | yes | yes |
 | zellij | yes | yes | yes | yes | no | no |
 | cmux | yes | yes | yes | yes | no | no |
-| orca | no | yes | yes | no | no | no |
+| orca | yes | yes | yes | yes | yes | yes |
 | paseo | yes | yes | yes | yes | no | no |
 | rex | yes | yes | yes | yes | yes | yes |
 | t3code | yes | yes | yes | no | yes | no |

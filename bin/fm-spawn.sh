@@ -90,7 +90,7 @@
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
 #   secondmate's charter.
-#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>] [--account <entry>]
+#        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>] [--account <entry>] [--backend orca]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded worktree, reusing its recorded endpoint when that
 #   endpoint still exists, instead of creating either from scratch. It is
@@ -99,24 +99,29 @@
 #   transaction; call fm-control rather than this flag directly unless you are
 #   deliberately re-launching an already-stopped task. Every identity axis -
 #   backend, kind, project or home, worktree, endpoint - comes from the task's
-#   validated state/<id>.meta, so --backend, --scout, --secondmate, a project
-#   positional, and batch pairs are all refused alongside it; only harness,
-#   model, effort, and a declared Claude or Codex account may change, which
-#   is what makes a harness switch one ordinary relaunch. It refuses unless the
+#   validated state/<id>.meta, so --scout, --secondmate, a project positional,
+#   and batch pairs are all refused alongside it; only harness, model, effort,
+#   and a declared Claude or Codex account may change, which is what makes a
+#   harness switch one ordinary relaunch. --backend orca is the one backend move: a
+#   secondmate recorded on tmux whose agent reads `dead` gets a fresh terminal in
+#   its home's Orca project, the republished record rebinds to it, and its old
+#   tmux window is then closed; any other kind or backend pair is refused, and
+#   naming the recorded backend changes nothing. It refuses unless the
 #   recorded endpoint is positively agent-free on a backend with both a
 #   recovery-grade agent-state classifier and replacement-agent support
-#   (tmux or herdr), and clears the previous harness's per-task wiring
+#   (tmux, herdr, rex, or orca), and clears the previous harness's per-task wiring
 #   before arming the new incarnation. T3 Code has the classifier but refuses
 #   relaunch because a thread keeps its conversation across turns and provider
 #   changes. Two verdicts are agent-free: a `dead`
 #   endpoint is ADOPTED as-is, while an endpoint PROVEN gone is RE-CREATED in the recorded
 #   worktree and the republished record rebinds the task to it. That proof is
 #   its own step, because a backend's `missing` also covers an endpoint that is
-#   merely unreachable from here - and it is only available on HERDR, which must
-#   still read the recorded pane as gone once that session's server is running
-#   again. A tmux `missing` always refuses: a task record carries no socket
-#   identity for its endpoint, so no read here can tell a destroyed window from
-#   one on a tmux server this process cannot address. An endpoint that turns out
+#   merely unreachable from here - and it is only available on HERDR and REX
+#   (fm_control_endpoint_absence_verdict). A tmux `missing` always refuses: a
+#   task record carries no socket identity for its endpoint, so no read here can
+#   tell a destroyed window from one on a tmux server this process cannot
+#   address; an Orca `missing` refuses because a handle the running Orca no
+#   longer knows does not prove its pty gone. An endpoint that turns out
 #   to have survived refuses too. The worktree is reused untouched either way; a
 #   rebind is a recovery, never a teardown. Only a crewmate or scout rebinds: a
 #   secondmate whose endpoint is gone is respawned by its own owner
@@ -172,8 +177,11 @@
 #   sparse task copy (--sparse) replaces that lease and takes the same move.
 #   codex-app is not a known backend yet; docs/codex-app-backend.md owns that
 #   blocked backend contract. Default tmux spawns do not write backend= to meta;
-#   absent backend= means tmux. Orca, cmux, paseo, tern, and hc do not support
-#   --secondmate spawns.
+#   absent backend= means tmux. cmux, paseo, tern, and hc do not support
+#   --secondmate spawns. An Orca --secondmate registers the home as its own Orca
+#   project and opens one terminal in it (no Orca worktree is created, and the
+#   agent runs directly in that terminal, never inside tmux); a home whose Orca
+#   sessions already run an agent, or cannot be read, is refused.
 #   A rex crewmate or scout opens one tab in the Rex session the launching
 #   firstmate runs in when it runs directly inside Rex, otherwise in its home's
 #   own Rex session; a --secondmate launch opens its tab in that secondmate
@@ -1299,12 +1307,10 @@ esac
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
 # task's own durable record below. Contradicting it on the command line is a
-# refusal rather than a silently-ignored flag.
+# refusal rather than a silently-ignored flag. --backend is the one exception:
+# naming another backend asks for the backend move the relaunch block below
+# validates against the record (a secondmate from tmux to orca only).
 if [ "$RELAUNCH" -eq 1 ]; then
-  [ "$BACKEND_SET" -eq 0 ] || {
-    echo "error: --relaunch reuses the task's recorded backend; --backend cannot override it" >&2
-    exit 1
-  }
   [ "$KIND_SET" -eq 0 ] || {
     echo "error: --relaunch reuses the task's recorded kind; --scout/--secondmate cannot override it" >&2
     exit 1
@@ -1825,6 +1831,27 @@ parse_orca_worktree_result() {
   fi
 }
 
+# A secondmate's Orca endpoint: one terminal opened in the Orca project
+# registered at its home (bin/backends/orca.sh owns that registration), never a
+# new Orca worktree. A home whose Orca sessions already run an agent - or
+# cannot be read - is refused, because a terminal handle Orca no longer knows
+# reads `missing` while its agent may still run there, and a respawn beside it
+# would put two supervisors on one home. The abort cleanup closes only this
+# terminal; the home is never removed.
+spawn_orca_home_terminal_open() {
+  local live
+  ORCA_WORKTREE_ID=$(fm_backend_orca_home_worktree_ensure "$PROJ_ABS") || exit 1
+  live=$(fm_backend_orca_worktree_agent_state "$ORCA_WORKTREE_ID")
+  if [ "$live" != none ]; then
+    echo "error: secondmate home $PROJ_ABS already has an Orca terminal whose agent state reads '$live'; refusing to open a second secondmate there (close that terminal in Orca after confirming no agent runs in it)" >&2
+    exit 1
+  fi
+  ORCA_TERMINAL=$(fm_backend_orca_terminal_create "$ORCA_WORKTREE_ID" "$W") || exit 1
+  ORCA_ABORT_CLEANUP=1
+  T=$ORCA_TERMINAL
+  WT_TARGET=$T
+}
+
 # Non-forced unlink arbitration for a delivered Orca source-mode launch file:
 # the pane unlinks it before launching the worker and refuses when that unlink
 # fails, so exactly one side's unlink succeeds. Returns 0 when this spawn removed
@@ -1890,7 +1917,8 @@ spawn_abort_cleanup() {
     if [ -n "${ORCA_TERMINAL:-}" ]; then
       fm_backend_kill orca "$ORCA_TERMINAL" 2>/dev/null && SPAWN_ENDPOINT_CLOSED=1 || true
     fi
-    if [ -n "${ORCA_WORKTREE_ID:-}" ]; then
+    # A secondmate's Orca worktree is its home, which is never removed here.
+    if [ -n "${ORCA_WORKTREE_ID:-}" ] && [ "${KIND:-}" != secondmate ]; then
       if ! fm_backend_remove_worktree orca "$ORCA_WORKTREE_ID" 2>/dev/null; then
         if [ "$SPAWN_FRESH_COMMIT_PENDING" = 1 ]; then
           if ! spawn_fresh_commit_rollback; then
@@ -2401,6 +2429,34 @@ if [ "$RELAUNCH" -eq 1 ]; then
 fi
 ORCA_LAUNCH_ENV_ENABLED=0
 ORCA_LAUNCH_ENV_ARGS=
+# spawn_orca_launch_env_resolve: config/launch-env-tmux-session for an Orca
+# launch, resolved for every Orca launch - a fresh spawn, a relaunch of an Orca
+# task, and a secondmate's move onto Orca - before anything is stopped or
+# created, so a malformed file refuses rather than launching without it.
+spawn_orca_launch_env_resolve() {
+  ORCA_LAUNCH_ENV_ENABLED=$(fm_config_source_present "$CONFIG/launch-env-tmux-session") || exit 1
+  if [ "$ORCA_LAUNCH_ENV_ENABLED" = 1 ]; then
+    if [ "$LAUNCH_ENV_ENABLED" != 1 ]; then
+      echo "error: config/launch-env-tmux-session requires config/launch-env-allowlist; refusing Orca launch" >&2
+      exit 1
+    fi
+    if [ ! -f "$CONFIG/launch-env-tmux-session" ] || [ ! -r "$CONFIG/launch-env-tmux-session" ]; then
+      echo "error: config/launch-env-tmux-session must be a readable regular file" >&2
+      exit 1
+    fi
+    ORCA_LAUNCH_ENV_SESSION=$(cat "$CONFIG/launch-env-tmux-session") || exit 1
+    case "$ORCA_LAUNCH_ENV_SESSION" in
+      ''|*[!A-Za-z0-9_-]*)
+        echo "error: config/launch-env-tmux-session must contain one session name (letters, digits, underscores or hyphens)" >&2
+        exit 1
+        ;;
+    esac
+    ORCA_LAUNCH_ENV_ARGS=$(fm_backend_orca_launch_env_args \
+      "$ORCA_LAUNCH_ENV_SESSION" "$LAUNCH_ENV_NAMES") || exit 1
+  elif [ -n "$LAUNCH_ENV_NAMES" ]; then
+    echo "warning: backend=orca resolves config/launch-env-allowlist names from the Orca terminal's own environment, not this home's; set config/launch-env-tmux-session to take them from a scoped tmux session" >&2
+  fi
+}
 if [ "$RELAUNCH" -eq 0 ]; then
   mkdir -p "$STATE" || {
     echo "error: could not create parent state directory" >&2
@@ -2479,10 +2535,6 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   fm_backend_validate_spawn "$BACKEND" || exit 1
   fm_backend_source "$BACKEND" || exit 1
-  if [ "$BACKEND" = orca ] && [ "$KIND" = secondmate ]; then
-    echo "error: backend=orca does not support --secondmate spawns yet" >&2
-    exit 1
-  fi
   if [ "$BACKEND" = cmux ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=cmux does not support --secondmate spawns yet" >&2
     exit 1
@@ -2503,30 +2555,7 @@ if [ "$RELAUNCH" -eq 0 ]; then
   if [ "$BACKEND" = rex ]; then
     fm_backend_rex_local_server_ensure || exit 1
   fi
-  if [ "$BACKEND" = orca ]; then
-    ORCA_LAUNCH_ENV_ENABLED=$(fm_config_source_present "$CONFIG/launch-env-tmux-session") || exit 1
-    if [ "$ORCA_LAUNCH_ENV_ENABLED" = 1 ]; then
-      if [ "$LAUNCH_ENV_ENABLED" != 1 ]; then
-        echo "error: config/launch-env-tmux-session requires config/launch-env-allowlist; refusing Orca launch" >&2
-        exit 1
-      fi
-      if [ ! -f "$CONFIG/launch-env-tmux-session" ] || [ ! -r "$CONFIG/launch-env-tmux-session" ]; then
-        echo "error: config/launch-env-tmux-session must be a readable regular file" >&2
-        exit 1
-      fi
-      ORCA_LAUNCH_ENV_SESSION=$(cat "$CONFIG/launch-env-tmux-session") || exit 1
-      case "$ORCA_LAUNCH_ENV_SESSION" in
-        ''|*[!A-Za-z0-9_-]*)
-          echo "error: config/launch-env-tmux-session must contain one session name (letters, digits, underscores or hyphens)" >&2
-          exit 1
-          ;;
-      esac
-      ORCA_LAUNCH_ENV_ARGS=$(fm_backend_orca_launch_env_args \
-        "$ORCA_LAUNCH_ENV_SESSION" "$LAUNCH_ENV_NAMES") || exit 1
-    elif [ -n "$LAUNCH_ENV_NAMES" ]; then
-      echo "warning: backend=orca resolves config/launch-env-allowlist names from the Orca terminal's own environment, not this home's; set config/launch-env-tmux-session to take them from a scoped tmux session" >&2
-    fi
-  fi
+  [ "$BACKEND" != orca ] || spawn_orca_launch_env_resolve
 fi
 SPAWN_TASK_LOCK="$STATE/.spawn-$ID.lock"
 if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
@@ -2656,6 +2685,31 @@ if [ "$RELAUNCH" -eq 1 ]; then
   if [ "$RELAUNCH_REBIND" -eq 1 ] && [ "$KIND" = secondmate ]; then
     echo "error: secondmate $ID's recorded endpoint is gone; its recovery is owned by the secondmate respawn path, not by relaunch (run bin/fm-spawn.sh $ID --secondmate, or let the session-start liveness sweep do it)" >&2
     exit 1
+  fi
+  # --backend on a relaunch is the one supported backend move: a secondmate
+  # whose tmux agent is proven stopped (`dead` above; a tmux `missing` can
+  # never be proven) is relaunched in a fresh Orca terminal in its home, the
+  # published record rebinds to it, and the old tmux window is closed only
+  # after that record is in place. Naming the recorded backend is a no-op.
+  RELAUNCH_SWITCH_OLD_TARGET=
+  if [ "$BACKEND_SET" -eq 1 ] && [ "$BACKEND_ARG" != "$BACKEND" ]; then
+    if [ "$KIND" != secondmate ] || [ "$BACKEND" != tmux ] || [ "$BACKEND_ARG" != orca ]; then
+      echo "error: --relaunch --backend $BACKEND_ARG would move $KIND $ID off its recorded $BACKEND backend; the only supported backend move is a secondmate from tmux to orca" >&2
+      exit 1
+    fi
+    RELAUNCH_SWITCH_OLD_TARGET=$RELAUNCH_TARGET
+    BACKEND=$BACKEND_ARG
+    fm_backend_validate_spawn "$BACKEND" || exit 1
+    fm_backend_source "$BACKEND" || exit 1
+    fm_backend_runtime_check "$BACKEND" || exit 1
+    RELAUNCH_REBIND=1
+  fi
+  if [ "$BACKEND" = orca ]; then
+    spawn_orca_launch_env_resolve
+    if [ -z "$RELAUNCH_SWITCH_OLD_TARGET" ]; then
+      ORCA_WORKTREE_ID=$(fm_meta_get "$RELAUNCH_META" orca_worktree_id)
+      ORCA_TERMINAL=$RELAUNCH_TARGET
+    fi
   fi
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
   YOLO=$(fm_meta_get "$RELAUNCH_META" yolo)
@@ -5134,6 +5188,13 @@ if [ "$RELAUNCH" -eq 1 ]; then
     T=$RELAUNCH_TARGET
     WT_TARGET=$T
     SES=${T%%:*}
+  elif [ "$BACKEND" = orca ]; then
+    # Only a secondmate's tmux-to-orca move reaches here (the relaunch block
+    # above): an Orca `missing` is never proven absent, so a recorded Orca
+    # endpoint is always adopted. The new terminal opens in the home; the old
+    # tmux window is closed after the record below is published.
+    spawn_orca_home_terminal_open
+    SES=
   elif [ "$BACKEND" = rex ]; then
     # The recorded endpoint is authoritatively gone, so there is nothing to
     # adopt: create ONE fresh endpoint for the same task, opened directly in the
@@ -5185,8 +5246,9 @@ EOF
     #
     # Herdr reaches here only on a PROVEN-gone pane: its every read is scoped to
     # the session the record names (fm_control_endpoint_absence_verdict owns
-    # that argument). tmux and every secondmate were already refused, and rex
-    # took the branch above, so there is no dispatch left to make.
+    # that argument). tmux, Orca, and every secondmate other than the tmux-to-
+    # orca move were already refused, and rex and that move took the branches
+    # above, so there is no dispatch left to make.
     #
     # This deliberately uses the FLAT container shape rather than Herdr's
     # presentation projection: projection is a presentation-only layout that is
@@ -5562,42 +5624,46 @@ EOF
     T="$HC_SES:$HC_TERMINAL"
     ;;
   orca)
-    if [ -n "$SPARSE" ]; then
-      # Firstmate made this copy (header: --sparse); Orca only opens the terminal.
-      spawn_create_sparse_copy
-      SPARSE_WT=$WT
-      ORCA_WT_RAW=$(fm_backend_orca_worktree_adopt "$PROJ_ABS" "$SPARSE_WT") || exit 1
-      parse_orca_worktree_result "$ORCA_WT_RAW" || true
-      if [ "$(real_path_or_raw "${WT:-}")" != "$(real_path_or_raw "$SPARSE_WT")" ]; then
-        echo "error: orca resolved the sparse copy $SPARSE_WT as '${WT:-}'; refusing to launch in a copy firstmate did not create" >&2
-        WT=$SPARSE_WT
-        exit 1
-      fi
+    if [ "$KIND" = secondmate ]; then
+      spawn_orca_home_terminal_open
     else
-      set +e
-      ORCA_WT_RAW=$(fm_backend_orca_worktree_create "$PROJ_ABS" "$W")
-      ORCA_WT_STATUS=$?
-      set -e
-      if [ "$ORCA_WT_STATUS" -ne 0 ]; then
-        if [ "$ORCA_WT_STATUS" -eq 2 ] && [ -n "$ORCA_WT_RAW" ]; then
-          if parse_orca_worktree_result "$ORCA_WT_RAW" && [ -n "$ORCA_WORKTREE_ID" ]; then
-            ORCA_ABORT_CLEANUP=1
-          fi
+      if [ -n "$SPARSE" ]; then
+        # Firstmate made this copy (header: --sparse); Orca only opens the terminal.
+        spawn_create_sparse_copy
+        SPARSE_WT=$WT
+        ORCA_WT_RAW=$(fm_backend_orca_worktree_adopt "$PROJ_ABS" "$SPARSE_WT") || exit 1
+        parse_orca_worktree_result "$ORCA_WT_RAW" || true
+        if [ "$(real_path_or_raw "${WT:-}")" != "$(real_path_or_raw "$SPARSE_WT")" ]; then
+          echo "error: orca resolved the sparse copy $SPARSE_WT as '${WT:-}'; refusing to launch in a copy firstmate did not create" >&2
+          WT=$SPARSE_WT
+          exit 1
         fi
+      else
+        set +e
+        ORCA_WT_RAW=$(fm_backend_orca_worktree_create "$PROJ_ABS" "$W")
+        ORCA_WT_STATUS=$?
+        set -e
+        if [ "$ORCA_WT_STATUS" -ne 0 ]; then
+          if [ "$ORCA_WT_STATUS" -eq 2 ] && [ -n "$ORCA_WT_RAW" ]; then
+            if parse_orca_worktree_result "$ORCA_WT_RAW" && [ -n "$ORCA_WORKTREE_ID" ]; then
+              ORCA_ABORT_CLEANUP=1
+            fi
+          fi
+          exit 1
+        fi
+        parse_orca_worktree_result "$ORCA_WT_RAW" || true
+      fi
+      ORCA_ABORT_CLEANUP=1
+      if [ -z "$ORCA_WORKTREE_ID" ] || [ -z "$WT" ]; then
+        echo "error: orca did not return a worktree id/path for $W" >&2
         exit 1
       fi
-      parse_orca_worktree_result "$ORCA_WT_RAW" || true
+      validate_spawn_worktree "orca worktree create" "$W"
+      if [ -z "$ORCA_TERMINAL" ]; then
+        ORCA_TERMINAL=$(fm_backend_orca_terminal_create "$ORCA_WORKTREE_ID" "$W") || exit 1
+      fi
+      T="$ORCA_TERMINAL"
     fi
-    ORCA_ABORT_CLEANUP=1
-    if [ -z "$ORCA_WORKTREE_ID" ] || [ -z "$WT" ]; then
-      echo "error: orca did not return a worktree id/path for $W" >&2
-      exit 1
-    fi
-    validate_spawn_worktree "orca worktree create" "$W"
-    if [ -z "$ORCA_TERMINAL" ]; then
-      ORCA_TERMINAL=$(fm_backend_orca_terminal_create "$ORCA_WORKTREE_ID" "$W") || exit 1
-    fi
-    T="$ORCA_TERMINAL"
     ;;
   t3code)
     # Validate the project policy before the first T3 or Treehouse mutation;
@@ -7716,6 +7782,15 @@ if [ "$RELAUNCH" -eq 1 ]; then
   RELAUNCH_REPLACEMENT_PENDING=0
   SPAWN_META_PUBLISH_STARTED=0
   SPAWN_META_TMP=
+  # A secondmate's move onto Orca: the published record now names the new
+  # terminal, so it is no longer the abort cleanup's to close, and the old tmux
+  # window - its agent already proven stopped - is closed. A window that will not
+  # close is only a leftover shell, named so it can be closed by hand.
+  if [ -n "${RELAUNCH_SWITCH_OLD_TARGET:-}" ]; then
+    ORCA_ABORT_CLEANUP=0
+    fm_backend_kill tmux "$RELAUNCH_SWITCH_OLD_TARGET" 2>/dev/null ||
+      echo "warning: secondmate $ID moved to Orca, but its old tmux window $RELAUNCH_SWITCH_OLD_TARGET could not be closed; close it by hand" >&2
+  fi
 fi
 # A dispatch or relaunch keeps the per-task meta lock through launch delivery.
 # The backlog mutation is deliberately the final fallible commit below, so
