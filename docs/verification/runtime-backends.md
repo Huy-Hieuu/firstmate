@@ -2432,6 +2432,17 @@ bash tests/fm-control.test.sh
 Under Bash 3.2.57 the first two passed in full.
 `tests/fm-control.test.sh` passed every case except its Hermes profile-refusal case, which fails identically on the unchanged base with `args[@]: unbound variable` from `bin/fm-hermes-lib.sh`.
 
+### Orca composer read
+
+The composer read was verified on 2026-11-27 on macOS 26.4.1 with the `orca` CLI 1.4.278 and omp 18.18.0, on a throwaway omp secondmate seeded under `/tmp` and retired with `bin/fm-teardown.sh`.
+
+- An idle mate's `orca terminal read --screen --json` returned `source: screen` with the `❯` composer row and omp's status row as its last two rows, while the default stream read also held stale fragments such as an old `⎋ Working…` row and, after a resize, a replayed full frame.
+- With `/` typed and omp's slash menu open, the stream-based classifier read `empty`; the screen-based one reads `unknown`.
+- With `keep this draft` typed, the screen showed `❯ keep this draft` above the status row and the verdict was `unknown`, so `fm-control.sh relaunch` refused, the agent stayed `alive`, and the draft stayed in the composer.
+- With the composer empty, `fm-control.sh relaunch` reported `relaunched` and `bin/fm-secondmate-restart.sh` reported `1 of 1 restarted`.
+
+`tests/fm-backend-orca.test.sh` pins the screen read, the omp idle and draft frames, and `unknown` for a `screen-unavailable`, `stream`, or unlabelled read.
+
 ## cmux
 
 The current compatibility floor is cmux 0.64, and the active live evidence uses 0.64.17 build 97 on macOS aarch64.

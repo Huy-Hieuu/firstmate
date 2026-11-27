@@ -369,8 +369,8 @@ fm_backend_orca_capture() {  # <terminal-id> <lines>
   fm_backend_orca_json_text "$out"
 }
 
-fm_backend_orca_json_text() {  # <json>
-  printf '%s' "$1" | node -e '
+fm_backend_orca_json_text() {  # <json> [screen]
+  printf '%s' "$1" | FM_ORCA_REQUIRE_SCREEN="${2:-}" node -e '
 const fs = require("fs");
 const data = JSON.parse(fs.readFileSync(0, "utf8"));
 if (data.ok === false) {
@@ -379,6 +379,13 @@ if (data.ok === false) {
   process.exit(2);
 }
 const r = data.result || {};
+if (process.env.FM_ORCA_REQUIRE_SCREEN === "screen") {
+  const source = (r.terminal || r).source;
+  if (source !== "screen") {
+    console.error("orca terminal read returned source " + JSON.stringify(source === undefined ? null : source) + ", not a rendered screen");
+    process.exit(3);
+  }
+}
 if (r.terminal && Array.isArray(r.terminal.tail)) {
   process.stdout.write(r.terminal.tail.join("\n"));
 } else if (Array.isArray(r.tail)) {
@@ -389,20 +396,30 @@ if (r.terminal && Array.isArray(r.terminal.tail)) {
 '
 }
 
-# fm_backend_orca_composer_capture: the orca composer screen - one bounded
-# tail read of the live terminal. Deliberately NOT the old 200-line
-# backward-paged read: the composer is bottom-anchored, and paging back into
-# scrollback is what let a stale startup banner (codex's bordered
-# "permissions" box) compete with - and once outrank - the live composer.
+# fm_backend_orca_composer_capture: the orca composer screen - the bottom
+# rows of the terminal's RENDERED frame (`terminal read --screen`). The default
+# read is accumulated stream output, not the screen: a TUI that repaints only
+# its status row (omp idles that way) fills the stream tail with status-row
+# repaints, so the composer row above it falls out of any bounded tail and the
+# verdict was `unknown` for an idle omp; the stream also keeps stale repaint
+# fragments (an old `Working…` line) the screen no longer shows. Only a read
+# Orca labels `source: screen` is accepted: `screen-unavailable` (Orca fell
+# back to the stream) or an absent source fails the capture, so the verdict
+# stays `unknown` rather than classifying stream output as the composer. It is
+# still one bounded read, never paged back into scrollback, where a stale
+# startup banner (codex's bordered "permissions" box) could compete with - and
+# once outrank - the live composer.
 fm_backend_orca_composer_capture() {  # <terminal-id> [expected-label]
-  fm_backend_orca_capture "$1" "$FM_COMPOSER_CAPTURE_LINES"
+  local out
+  fm_backend_orca_tool_check || return 1
+  out=$(orca terminal read --terminal "$1" --screen --limit "$FM_COMPOSER_CAPTURE_LINES" --json) || return 1
+  fm_backend_orca_json_text "$out" screen
 }
 
 # fm_backend_orca_composer_caps: static capability facts, not logic (see the
-# capability model in bin/fm-composer-lib.sh). Orca's `terminal read` returns
-# plain text; whether it can emit ANSI is unverified (orca is not installed
-# on the verification machine), so styled stays 0 - the conservative
-# degradation - until a live capture proves otherwise.
+# capability model in bin/fm-composer-lib.sh). Orca's `terminal read --screen`
+# returns plain text with no styling or cursor position, so styled and cursor
+# stay 0 - the conservative degradation.
 fm_backend_orca_composer_caps() {
   printf 'styled=0\ncursor=0\nidentity=0\nrows=%s\n' "$FM_COMPOSER_CAPTURE_LINES"
 }
