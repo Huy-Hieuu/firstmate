@@ -3611,6 +3611,32 @@ A throwaway scout was spawned through `bin/fm-spawn.sh --scout --harness omp --m
 
 `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the primary evidence; the worker path above is refreshed by repeating the scout dispatch after any omp upgrade.
 
+### In-process side sessions
+
+Verified on 2026-11-28 against omp 19.2.1 (`/opt/homebrew/bin/omp`, the Homebrew build) on macOS 26 arm64 in JSON-RPC mode, for the side-session rule in `.omp/extensions/fm-primary-omp-watch.ts`.
+A probe extension that logs module evaluation, each factory call, and each lifecycle event with `ctx.hasUI` recorded one task subagent as a second factory call on the same module instance in the main thread:
+
+```text
+main=true thread=0 module-evaluated
+main=true thread=0 factory bind=1
+main=true thread=0 bind=1 session_start hasUI=true mode=rpc
+main=true thread=0 factory bind=2
+main=true thread=0 bind=2 session_start hasUI=false mode=print
+main=true thread=0 bind=2 session_shutdown hasUI=false mode=print
+```
+
+The subagent's `session_shutdown` fired when omp parked it after `task.agentIdleTtlMs`, which defaults to 420000 ms and was 4000 ms in the lab, while the primary binding received no lifecycle event.
+With the previous extension, the same lab armed a second cycle from the subagent's `session_start`, and after the park every primary `fm_watch_arm_omp` call answered `watcher: not armed - omp session is shutting down`.
+With the side-session rule, the subagent armed nothing and the repair answered that the primary still owns its arm child.
+The tool-call bridge also changed: the openai-codex model called `fm_watch_arm_omp` from the eval tool as `tool.fm_watch_arm_omp({})`.
+
+```text
+FM_OMP_LIVE_E2E=1 bash tests/fm-omp-primary-live-e2e.test.sh
+ok - omp omp/19.2.1: a parked task subagent neither armed a cycle nor shut down the primary's supervision
+```
+
+That live guard is the refresh command after any omp upgrade; `tests/fm-omp-harness.test.sh` pins the same side-session rule over a fake extension API.
+
 ### Profile flag
 
 Verified on 2026-10-24 against omp 18.4.3 (`~/.bun/bin/omp`, a Bun package install) on macOS 15 arm64, for the [per-secondmate omp profile](../configuration.md#per-secondmate-omp-profile) pin.

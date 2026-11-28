@@ -38,11 +38,28 @@
 //     not run the host nothing below changes.
 //
 // Session-generation ownership (stated once here):
-// omp emits session_shutdown for ordinary same-process replacements (/new,
-// /resume, /fork) as well as terminal quit. This extension binds one generation
-// per session activation. Only the active live generation may start, stop,
-// rearm, or clear the arm child. An owning replacement session_start (or fresh
-// factory bind) arms its new generation without a model turn. A replacement
+// omp binds this factory once per AgentSession, and the module is shared by
+// every binding in one JS realm. Besides the primary session, in-process side
+// sessions bind it too - task and eval subagents, /tan forks, revived
+// subagents - and their bindings receive their own session_start (subagents)
+// and, when the side session is disposed (a finished subagent is parked after
+// task.agentIdleTtlMs, 7 minutes by default), session_shutdown; subagents may
+// also run in worker threads, which reload the module in a separate realm
+// under the same pid. omp 19.2.1 keeps the primary
+// session's binding across /new, /resume, /fork, and reload (session_switch),
+// so the primary sees session_shutdown only when it is disposed.
+// This extension binds one generation per session activation. Only the active
+// live generation may start, stop, rearm, or clear the arm child. A binding
+// never takes the active slot from another live generation, and a binding is
+// a side session for good once it runs in a worker thread or any omp context
+// reports hasUI === false (subagents and forks have no UI; the TUI and RPC
+// primaries do); a side session never claims, arms, or answers a repair. An
+// owning replacement session_start (or fresh factory bind) arms its new
+// generation without a model turn. A primary binding whose own generation
+// stopped without a successor (a session_shutdown with no session_start
+// after it) re-claims a fresh generation and arms it at its next
+// before_agent_start or fm_watch_arm_omp, provided no other live generation
+// owns the slot and the lock check in the arm passes. A replacement
 // handoff carries actionable closes that were still pending delivery; its
 // durable state lives at state/extensions/omp-primary-watch/session-replacement-actionable.json.
 // Stale callbacks from a prior generation are no-ops against the active replacement.
@@ -73,6 +90,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { isMainThread } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 // typebox resolves inside omp's extension loader (verified, omp 18.1.11); the
 // injected TypeBox compatibility shim keeps it available for tool parameters.
@@ -175,6 +193,8 @@ const hostReadyTimeoutMs = Math.max(armReadyTimeoutMs, 30000);
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
 const repairOnlyHint = "call fm_watch_arm_omp again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - omp session is shutting down";
+const sideSessionMessage = "watcher: not armed - this omp session is a side session (a subagent or fork); the primary session in this process owns watcher supervision";
+const otherOwnerMessage = `watcher: unchanged - another omp session in this process owns watcher supervision; ${repairOnlyHint}`;
 
 let nextGenerationId = 0;
 let nextHandoffId = 0;
@@ -217,6 +237,9 @@ const armRetired = new WeakSet<ChildProcess>();
 const armRecovery = new WeakMap<ChildProcess, { generation: string; watcherPid: string }>();
 const armPendingActionable = new WeakMap<ChildProcess, PendingActionableClose>();
 const armHostMode = new WeakMap<ChildProcess, boolean>();
+// Unready successors whose retirement timed out; restoration gave up on them,
+// so their eventual close is supervised like any other failed arm.
+const armRetained = new WeakSet<ChildProcess>();
 
 function positiveInteger(name: string, fallback: number): number {
   const value = Number(process.env[name]);
@@ -506,8 +529,12 @@ function createGeneration(): SessionGeneration {
   };
 }
 
-function activateGeneration(generation: SessionGeneration): void {
+// Takes the active slot unless another live generation already holds it; see
+// "Session-generation ownership" above.
+function claimGeneration(generation: SessionGeneration): boolean {
+  if (activeGeneration && activeGeneration !== generation && !activeGeneration.stopping) return false;
   activeGeneration = generation;
+  return true;
 }
 
 function generationIsLive(generation: SessionGeneration): boolean {
@@ -575,8 +602,10 @@ const cleanupOnProcessExit = () => {
 process.once("exit", cleanupOnProcessExit);
 
 export default function (pi: ExtensionAPI) {
+  // A worker-thread realm is never the primary session.
+  let sideSession = !isMainThread;
   let generation = createGeneration();
-  activateGeneration(generation);
+  if (!sideSession) claimGeneration(generation);
 
   // The latest omp context's idle probe; see "Held wakes" above.
   let mainIdle: (() => unknown) | null = null;
@@ -1006,6 +1035,9 @@ export default function (pi: ExtensionAPI) {
       if (replacement.ok) {
         failure = "watcher: FAILED - omp extension could not verify a ready successor watcher";
         if (!(await retireArm(successorChild))) {
+          // The retained arm's eventual close is supervised, even while the
+          // fallback below is still being delivered.
+          if (successorChild) armRetained.add(successorChild);
           return {
             failure: `${failure}\nwatcher: FAILED - omp extension could not restore watcher continuity because the unready successor arm did not exit within ${armRetireTimeoutMs}ms`,
           };
@@ -1154,10 +1186,11 @@ export default function (pi: ExtensionAPI) {
       if (!generationIsLive(owner)) return;
       if (owner.restoring) {
         // The pipeline is still delivering the wake this successor was
-        // started for. A verified successor that failed on its own keeps its
-        // bounded retry for the end of that delivery; an unready child closing
+        // started for. A verified successor that failed on its own, or a
+        // retained arm the restoration already gave up on, keeps its bounded
+        // retry for the end of that delivery; any other unready child closing
         // here was retired by the restoration itself.
-        if (verified && !armRetired.has(armChild)) {
+        if ((verified && !armRetired.has(armChild)) || armRetained.has(armChild)) {
           owner.deferredClose = { message: classification.message, predecessorArmPid: predecessor };
         }
         return;
@@ -1210,11 +1243,46 @@ export default function (pi: ExtensionAPI) {
     return result;
   }
 
+  // Any omp context without a UI belongs to a side session; see
+  // "Session-generation ownership" above. The binding gives back the active
+  // slot it may have claimed at bind time while no primary generation was live.
+  function observeContext(ctx: unknown): void {
+    if (sideSession || !ctx || typeof ctx !== "object" || !("hasUI" in ctx) || ctx.hasUI !== false) return;
+    sideSession = true;
+    if (activeGeneration === generation) {
+      stopGeneration(generation);
+      activeGeneration = null;
+    }
+  }
+
+  // A primary binding whose own generation stopped re-claims a fresh one when
+  // no other live generation owns the slot.
+  function reclaimGeneration(): boolean {
+    if (sideSession) return false;
+    if (generationIsLive(generation)) return true;
+    if (generation.stopping) generation = createGeneration();
+    return claimGeneration(generation);
+  }
+
+  function armOnRequest(ctx: unknown): ArmResult {
+    observeContext(ctx);
+    if (sideSession) return { ok: false, message: sideSessionMessage };
+    if (!reclaimGeneration()) return { ok: true, message: otherOwnerMessage };
+    return activateOwnedWatch(generation);
+  }
+
   pi.on?.("before_agent_start", (event, ctx) => {
+    observeContext(ctx);
     rememberContext(ctx);
     consumeWake(generation, String((event as { prompt?: unknown })?.prompt ?? ""));
+    // A turn in a primary whose generation stopped without a successor
+    // restores supervision without waiting for a repair call.
+    if (!sideSession && generation.stopping && lockOwnership() === "owned" && reclaimGeneration()) {
+      activateOwnedWatch(generation);
+    }
   });
   pi.on?.("message_start", (event, ctx) => {
+    observeContext(ctx);
     rememberContext(ctx);
     const message = (event as { message?: { role?: unknown; content?: unknown } })?.message;
     if (!message || message.role !== "user") return;
@@ -1222,9 +1290,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on?.("session_start", async (_event, ctx) => {
+    observeContext(ctx);
     rememberContext(ctx);
+    if (sideSession) return;
     if (generation.stopping) generation = createGeneration();
-    activateGeneration(generation);
+    if (!claimGeneration(generation)) return;
     markLoaded();
     if (lockOwnership() !== "owned") return;
     activateOwnedWatch(generation);
@@ -1240,7 +1310,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand?.("fm-watch-arm-omp", {
     description: "Arm firstmate watcher supervision through the omp extension instead of foreground bash.",
     handler: async (_args, ctx) => {
-      const result = activateOwnedWatch(generation);
+      const result = armOnRequest(ctx);
       ctx?.ui?.notify?.(result.message, result.ok ? "info" : "warning");
     },
   });
@@ -1254,8 +1324,8 @@ export default function (pi: ExtensionAPI) {
       "Call fm_watch_arm_omp only for the first required cycle or after a notification says the cycle is missing, failed, or unhealthy. Do not call it after ordinary work, turn completion, or ordinary signal, stale, check, or heartbeat handling because the omp extension owns re-arming. Never run bin/fm-watch-arm.sh through bash.",
     ],
     parameters: Type.Object({}),
-    execute: async () => {
-      const result = activateOwnedWatch(generation);
+    execute: async (_toolCallId: unknown, _params: unknown, _signal: unknown, _onUpdate: unknown, ctx: unknown) => {
+      const result = armOnRequest(ctx);
       return {
         content: [{ type: "text", text: result.message }],
         details: result,

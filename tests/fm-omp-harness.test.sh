@@ -1053,6 +1053,209 @@ EOF
   pass ".omp watch extension: a host close split across stream chunks reaches main as one whole follow-up"
 }
 
+# Fixture arm for the ownership cases: records its pid, reports a started
+# cycle, and becomes the long-lived process so TERM ends it at once.
+write_logging_arm_fixture() {  # <repo>
+  cat > "$1/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = --handling-delivered ] && exit 0
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+exec sleep 30
+SH
+  chmod +x "$1/bin/fm-watch-arm.sh"
+}
+
+# omp binds this extension once per session in one process: a subagent and a
+# /tan-style fork bind it next to the primary. Neither may take supervision
+# from the primary, arm a competing cycle, or leave the primary refusing to
+# arm once the side session shuts down.
+test_watch_extension_side_sessions_never_take_supervision() {
+  local repo home log out status
+  repo="$TMP_ROOT/watch-side/repo"; home="$TMP_ROOT/watch-side/home"; log="$TMP_ROOT/watch-side/arm.log"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  write_logging_arm_fixture "$repo"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const arms = () => existsSync(process.env.FM_ARM_LOG) ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n") : [];
+const alive = (pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const mod = await import(pathToFileURL(process.env.EXT).href);
+const bind = () => {
+  const b = { handlers: new Map(), tool: null };
+  mod.default({
+    on(e, h) { b.handlers.set(e, h); },
+    registerCommand() {},
+    registerTool(t) { b.tool = t; },
+    sendUserMessage() { return undefined; },
+  });
+  return b;
+};
+const text = (result) => result.content[0].text;
+const ui = { hasUI: true };
+const main = bind();
+await main.handlers.get("session_start")({ type: "session_start" }, ui);
+for (let i = 0; i < 60 && arms().length < 1; i += 1) await sleep(100);
+if (arms().length !== 1) throw new Error(`the primary session_start did not arm exactly once: ${arms().join(" | ")}`);
+const mainArm = arms()[0].replace(/^arm=/, "");
+// A subagent binds in the same process while the primary is live.
+const sub = bind();
+const noUi = { hasUI: false };
+await sub.handlers.get("session_start")({ type: "session_start" }, noUi);
+const subRepair = text(await sub.tool.execute("call-1", {}, undefined, undefined, noUi));
+if (!subRepair.startsWith("watcher: not armed - this omp session is a side session")) throw new Error(`a subagent repair call was not refused: ${subRepair}`);
+await sub.handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "task" }, noUi);
+await sub.handlers.get("session_shutdown")({}, noUi);
+// A /tan-style fork binds without any session_start; only its tool context shows it has no UI.
+const fork = bind();
+const forkRepair = text(await fork.tool.execute("call-2", {}, undefined, undefined, noUi));
+if (!forkRepair.startsWith("watcher: not armed - this omp session is a side session")) throw new Error(`a fork repair call was not refused: ${forkRepair}`);
+await fork.handlers.get("session_shutdown")({}, {});
+await sleep(300);
+if (arms().length !== 1) throw new Error(`a side session armed a competing cycle: ${arms().join(" | ")}`);
+if (!alive(mainArm)) throw new Error("a side session ended the primary's arm child");
+const mainRepair = text(await main.tool.execute("call-3", {}, undefined, undefined, ui));
+if (!/^watcher: unchanged - omp extension already owns an arm child/.test(mainRepair)) {
+  throw new Error(`the primary lost supervision to a side session: ${mainRepair}`);
+}
+await main.handlers.get("session_shutdown")({}, ui);
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp watch extension side sessions: $out"
+  [ -z "$out" ] || fail "omp watch extension side-session test printed output: $out"
+  pass ".omp watch extension: subagent and fork bindings never take, arm, or end the primary's supervision"
+}
+
+# A session_shutdown that no session_start follows must not leave a live
+# lock-owning primary refusing to arm: an explicit repair re-arms at once, and
+# the next turn re-arms on its own. Each shutdown still ends its arm child.
+test_watch_extension_reclaims_after_shutdown_without_start() {
+  local repo home log out status
+  repo="$TMP_ROOT/watch-reclaim/repo"; home="$TMP_ROOT/watch-reclaim/home"; log="$TMP_ROOT/watch-reclaim/arm.log"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  write_logging_arm_fixture "$repo"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const arms = () => existsSync(process.env.FM_ARM_LOG) ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n") : [];
+const alive = (pid) => { try { process.kill(Number(pid), 0); return true; } catch { return false; } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const handlers = new Map(); let tool = null;
+const mod = await import(pathToFileURL(process.env.EXT).href);
+mod.default({
+  on(e, h) { handlers.set(e, h); },
+  registerCommand() {},
+  registerTool(t) { tool = t; },
+  sendUserMessage() { return undefined; },
+});
+const ui = { hasUI: true };
+const arm = async () => (await tool.execute("call", {}, undefined, undefined, ui)).content[0].text;
+const awaitArms = async (count) => {
+  for (let i = 0; i < 60 && arms().length < count; i += 1) await sleep(100);
+  if (arms().length !== count) throw new Error(`expected ${count} arms, saw: ${arms().join(" | ")}`);
+  return arms()[count - 1].replace(/^arm=/, "");
+};
+const shutDown = async (pid) => {
+  await handlers.get("session_shutdown")({}, ui);
+  for (let i = 0; i < 40 && alive(pid); i += 1) await sleep(50);
+  if (alive(pid)) throw new Error(`session_shutdown left arm child ${pid} running`);
+};
+const first = await arm();
+if (!/^watcher: started omp extension arm child 1;/.test(first)) throw new Error(`unexpected first arm: ${first}`);
+await shutDown(await awaitArms(1));
+// No session_start follows the shutdown; the repair call must still arm.
+const repaired = await arm();
+if (!/^watcher: started omp extension arm child 1;/.test(repaired)) throw new Error(`repair after a shutdown without start did not arm: ${repaired}`);
+await shutDown(await awaitArms(2));
+// The next turn re-arms without any repair call.
+await handlers.get("before_agent_start")({ type: "before_agent_start", prompt: "next turn" }, ui);
+await awaitArms(3);
+const settled = await arm();
+if (!/^watcher: unchanged - omp extension already owns an arm child/.test(settled)) throw new Error(`the turn did not restore one live cycle: ${settled}`);
+await handlers.get("session_shutdown")({}, ui);
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp watch extension reclaim after shutdown: $out"
+  [ -z "$out" ] || fail "omp watch extension reclaim test printed output: $out"
+  pass ".omp watch extension: a shutdown with no session_start after it re-arms on repair and on the next turn, and ends its arm"
+}
+
+# An unready successor that outlives its retirement bound is retained; when it
+# finally closes while the fallback wake is still being delivered, the
+# extension re-arms instead of leaving supervision off.
+test_watch_extension_recovers_a_retained_unready_successor() {
+  local repo home log out status
+  repo="$TMP_ROOT/watch-unready/repo"; home="$TMP_ROOT/watch-unready/home"; log="$TMP_ROOT/watch-unready/arm.log"
+  install_omp_extension_fixture "$repo"
+  mkdir -p "$home/state"
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = --handling-delivered ] && exit 0
+printf 'arm=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+case "$(grep -c '^arm=' "$FM_ARM_LOG")" in
+  1)
+    printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+    sleep 0.5
+    printf 'signal: omp-unready done\n'
+    exit 0
+    ;;
+  2)
+    # Never ready, and slow to honour TERM.
+    trap 'sleep 0.6; exit 143' TERM
+    while :; do sleep 0.05; done
+    ;;
+esac
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+exec sleep 30
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" FM_ARM_LOG="$log" FM_OMP_ARM_READY_TIMEOUT_MS=1000 FM_WATCH_ARM_RETIRE_TIMEOUT_MS=150 \
+    FM_WATCH_REARM_RETRY_LIMIT=3 FM_WATCH_REARM_RETRY_BASE_MS=5 FM_WATCH_REARM_RETRY_MAX_MS=10 \
+    EXT="$repo/.omp/extensions/fm-primary-omp-watch.ts" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const arms = () => existsSync(process.env.FM_ARM_LOG) ? readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n") : [];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const handlers = new Map(); let tool = null; const sent = [];
+const mod = await import(pathToFileURL(process.env.EXT).href);
+mod.default({
+  on(e, h) { handlers.set(e, h); },
+  registerCommand() {},
+  registerTool(t) { tool = t; },
+  // Holds the delivery open long enough for the retained arm to close during it.
+  sendUserMessage(m) { sent.push(m); return sleep(2000); },
+});
+await tool.execute();
+for (let i = 0; i < 100 && arms().length < 3; i += 1) await sleep(100);
+if (sent.length !== 1 || !sent[0].includes("signal: omp-unready done")) throw new Error(`expected the one fallback wake: ${JSON.stringify(sent)}`);
+if (!sent[0].includes("the unready successor arm did not exit within 150ms")) {
+  throw new Error(`the successor was not retained past its retirement bound, so this case proves nothing: ${sent[0]}`);
+}
+if (arms().length !== 3) throw new Error(`the retained arm's close did not re-arm: ${arms().join(" | ")}`);
+const settled = (await tool.execute()).content[0].text;
+if (!/^watcher: unchanged - omp extension already owns an arm child/.test(settled)) throw new Error(`no live cycle after recovery: ${settled}`);
+await handlers.get("session_shutdown")({}, {});
+process.exit(0);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp watch extension retained unready successor: $out"
+  [ -z "$out" ] || fail "omp watch extension retained-successor test printed output: $out"
+  pass ".omp watch extension: a retained unready successor that closes mid-delivery is re-armed"
+}
+
 test_detection_anchored_name_and_marker_precedence
 test_lock_identity_and_liveness_classification
 test_bun_package_omp_identity_unit_shapes
@@ -1074,3 +1277,6 @@ test_watch_extension_runs_the_supervision_host quiet
 test_watch_extension_keeps_the_arm_without_the_file_or_with_off
 test_watch_extension_replays_a_host_only_boundary_across_replacement
 test_watch_extension_delivers_a_split_host_close_whole
+test_watch_extension_side_sessions_never_take_supervision
+test_watch_extension_reclaims_after_shutdown_without_start
+test_watch_extension_recovers_a_retained_unready_successor

@@ -72,10 +72,14 @@ The extension header owns how consumption is observed and why it only decides wh
 
 ### omp session replacement
 
-omp's replacement follows its own generation-owner contract in `.omp/extensions/fm-primary-omp-watch.ts`, whose header owns its differences from Pi:
+omp's replacement follows its own generation-owner contract in `.omp/extensions/fm-primary-omp-watch.ts`, whose header owns its differences from Pi and its side-session rule:
 
 - It retires the predecessor arm at replacement shutdown instead of retaining it across the handoff.
 - It reports no shutdown reason, so every shutdown with a pending actionable close persists the handoff for the next owning `session_start` to replay.
+- omp binds the extension once per session in one process, including task and eval subagents and `/tan` forks, and each side session sees its own `session_start` or `session_shutdown`.
+  A side session never claims, arms, or answers a repair, and never takes supervision from the live primary, so ending a subagent cannot switch the primary's watcher off.
+- A primary whose own generation stopped without a following `session_start` re-arms a fresh generation at its next turn or `fm_watch_arm_omp` call instead of answering that the session is shutting down.
+- A retained unready successor that closes while its fallback wake is still being delivered takes the bounded retry at the end of that delivery, as a verified successor does.
 
 ### Cursor stop hook
 

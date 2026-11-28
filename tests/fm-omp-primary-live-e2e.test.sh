@@ -23,7 +23,10 @@
 #      ledger-linked successor, and the wake arrives as one follow-up turn;
 #   4. with the successor watcher frozen until its beacon passes the lab grace,
 #      the next turn end is genuinely unsupervised, so session_stop must compel
-#      the turn-end guard continuation and the model reaches for the tool.
+#      the turn-end guard continuation and the model reaches for the tool;
+#   5. a task subagent, which omp binds to the same extension module, neither
+#      arms its own cycle nor leaves the primary's supervision shut down once
+#      omp parks it after the lab's short idle TTL and ends its session.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -186,6 +189,9 @@ rc=\$?
 printf 'rc=%s payload=%s\n' "\$rc" "\$payload" >> '$GUARD_SPY_LOG'
 exit "\$rc"
 SH
+# A short subagent idle TTL so stage 5 sees omp park a finished subagent, which
+# ends that subagent's session, within seconds instead of the 7-minute default.
+printf 'task:\n  agentIdleTtlMs: 4000\n' > "$LAB/subagent-park.yml"
 chmod +x "$PROJECT/bin/fm-turnend-guard.sh"
 [ -f "$PROJECT/.omp/extensions/fm-primary-omp-watch.ts" ] || fail "lab checkout is missing the omp watch extension"
 [ -f "$PROJECT/.omp/extensions/fm-primary-turnend-guard.ts" ] || fail "lab checkout is missing the omp turn-end extension"
@@ -219,11 +225,12 @@ wait_for_file() {  # <path> <attempts>
 # tool-execution frames rather than from text, because a tool result is echoed
 # by several frame kinds. omp exposes extension tools to some models (verified:
 # the openai-codex family on 18.1.11) through its virtual-file bridge, where the
-# model invokes the tool by WRITING xd://<tool-name>; a direct call and a bridge
-# write are the same invocation and are counted together.
+# model invokes the tool by WRITING xd://<tool-name>, and on 19.2.1 the same
+# family may call it from the eval tool as `tool.<tool-name>(...)`; a direct call
+# and either bridge are the same invocation and are counted together.
 tool_call_count() {  # <tool-name>
   local n
-  n=$(jq -r --arg t "$1" 'select(.type == "tool_execution_start" and (.toolName == $t or (.toolName == "write" and (.args.path // "") == ("xd://" + $t)))) | .type' "$RPC_LOG" 2>/dev/null | grep -c . 2>/dev/null) || true
+  n=$(jq -r --arg t "$1" 'select(.type == "tool_execution_start" and (.toolName == $t or (.toolName == "write" and (.args.path // "") == ("xd://" + $t)) or (.toolName == "eval" and ((.args.code // "") | contains("tool." + $t + "("))))) | .type' "$RPC_LOG" 2>/dev/null | grep -c . 2>/dev/null) || true
   printf '%s' "${n:-0}"
 }
 
@@ -256,7 +263,7 @@ mkfifo "$RPC_IN" || fail "could not create the rpc fifo"
       -u FM_HOME -u FM_ROOT_OVERRIDE -u FM_STATE_OVERRIDE -u FM_CONFIG_OVERRIDE -u FM_DATA_OVERRIDE \
       FM_OMP_HARNESS=omp OMP_SKIP_SETUP=1 FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 \
       FM_GUARD_GRACE="$GUARD_GRACE" \
-      omp --mode rpc --no-session --cwd "$PROJECT" --config "$PROJECT/.omp/fm-worker-overlay.yml" --auto-approve \
+      omp --mode rpc --no-session --cwd "$PROJECT" --config "$PROJECT/.omp/fm-worker-overlay.yml" --config "$LAB/subagent-park.yml" --auto-approve \
         --model "$MODEL" --thinking low < "$RPC_IN" > "$RPC_LOG" 2> "$RPC_ERR"
 ) &
 OMP_PID=$!
@@ -355,6 +362,31 @@ if [ -z "$repaired_pid" ] || ! kill -0 "$repaired_pid" 2>/dev/null; then
   fail "no live watcher after the guard stage"
 fi
 pass "omp $OMP_VERSION: session_stop compelled the guard continuation (guard rc=2, then a stop_hook_active stop) and the model reached for fm_watch_arm_omp"
+
+# --- 4. a parked subagent leaves the primary's supervision intact ----------------
+# omp binds the watch extension once per in-process session, so a task subagent
+# shares its module. Its session must never arm a competing cycle, and its
+# session ending when omp parks it must not leave the primary answering that the
+# session is shutting down.
+arm_children() { pgrep -f -- "$PROJECT/bin/fm-watch-arm.sh" | grep -c . || true; }
+arms_before=$(arm_children)
+ends_before=$(agent_end_count)
+rpc_send '{"id":"p4","type":"prompt","message":"Use the task tool exactly once to run one subagent whose whole assignment is: reply with the word OK and nothing else. After it finishes, reply with DONE and nothing else. Do not call fm_watch_arm_omp."}'
+wait_for_agent_ends $((ends_before + 1)) 360 || fail "omp did not finish the subagent turn"
+[ "$(tool_call_count task)" -ge 1 ] || fail "the model never ran the task tool, so no subagent session was bound"
+sleep 10
+[ "$(arm_children)" -le "$arms_before" ] || fail "a subagent session armed its own watcher cycle ($(arm_children) arm children, was $arms_before)"
+repair_from=$(($(wc -l < "$RPC_LOG") + 1))
+ends_before=$(agent_end_count)
+rpc_send '{"id":"p5","type":"prompt","message":"Call the fm_watch_arm_omp tool exactly once now, then reply with its result text verbatim and nothing else."}'
+wait_for_agent_ends $((ends_before + 1)) 360 || fail "omp did not finish the repair turn after the subagent parked"
+repair=$(tail -n +"$repair_from" "$RPC_LOG")
+case "$repair" in
+  *"omp session is shutting down"*) fail "the parked subagent's session end shut down the primary's supervision" ;;
+  *"watcher: unchanged - omp extension already owns an arm child"*) ;;
+  *) fail "the repair after the subagent parked did not report the primary's live arm: $(assistant_text_since "$repair_from")" ;;
+esac
+pass "omp $OMP_VERSION: a parked task subagent neither armed a cycle nor shut down the primary's supervision"
 
 # --- shutdown -------------------------------------------------------------------
 # omp documents that closing rpc stdin disposes the session and exits 0. On
